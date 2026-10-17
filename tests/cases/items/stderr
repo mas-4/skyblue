@@ -1,0 +1,13 @@
+site/_imports/page.html:1:41: warning: 'site/work/anki.md' has no frontmatter key 'link'
+    1 | <article><h1>${post.title}</h1><a href="${frontmatter.link}">${frontmatter.link}</a><sky-slot name="content" /></article>
+      |                                         ^
+site/_imports/page.html:1:62: warning: 'site/work/anki.md' has no frontmatter key 'link'
+    1 | <article><h1>${post.title}</h1><a href="${frontmatter.link}">${frontmatter.link}</a><sky-slot name="content" /></article>
+      |                                                              ^
+site/_imports/card.html:1:46: warning: 'site/work/anki.md' has no frontmatter key 'image'
+    1 | <a class="card" href="${post.url}"><img src="${frontmatter.image}" alt=""><h2>${post.title}</h2><p>${frontmatter.kind}</p></a>
+      |                                              ^
+site/index.html:4:4: warning: ${post.title} only has a value in a markdown post's template or item
+    4 | <p>${post.title}</p>
+      |    ^
+skyblue: 3 pages and 0 files -> out (4 warnings)

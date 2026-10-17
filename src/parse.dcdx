@@ -118,6 +118,7 @@ Node *Parser.tag(Token *tok, Token *block) {
     Node *node = ego.new_node(ND_LIST, tok);
     node.path = ego.required(tok, "directory", NULL);
     node.templ = ego.required(tok, "template", NULL);
+    node.item = tok.attr("item");
     node.name = optional(tok, "slot", "content");
     node.sort = optional(tok, "sort", "");
     node.title = optional(tok, "title", "title");

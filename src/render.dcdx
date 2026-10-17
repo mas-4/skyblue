@@ -109,6 +109,20 @@ void Render.var(Node *node) {
     return;
   }
 
+  if (node.ns.eqz("post")) {
+    if (!ego.post) {
+      node.loc.warn("${post.%.*s} only has a value in a markdown post's template or item",
+                    SF(node.key));
+      return;
+    }
+    Str *val = ego.post.get(node.key);
+    if (val)
+      ego.out.push(*val);
+    else
+      node.loc.warn("there is no ${post.%.*s}; posts have url and title", SF(node.key));
+    return;
+  }
+
   // frontmatter
   if (!ego.fm) {
     node.loc.warn("${frontmatter.%.*s} only has a value in a markdown post's template",
@@ -181,7 +195,14 @@ struct Post {
   Str sort_key;
   Str title;
   Map fm;
+  Map vars; // ${post.*}
 };
+
+static void put_var(Map *m, char *key, Str val) {
+  Str *v = alloc(sizeof(Str));
+  *v = val;
+  m.put(str(key), v);
+}
 
 static int cmp_posts(const void *a, const void *b) {
   Post *p = (Post *)a;
@@ -262,6 +283,10 @@ void Render.list(Doc *doc, Node *node) {
       posts[j] = tmp;
     }
   }
+  for (int i = 0; i < nposts; i++) {
+    put_var(&posts[i].vars, "url", posts[i].url);
+    put_var(&posts[i].vars, "title", posts[i].title);
+  }
 
   // The pages. Two listings of the same directory with the same
   // template (say, a blog page and the home page) share them.
@@ -287,6 +312,7 @@ void Render.list(Doc *doc, Node *node) {
     r.out = &page;
     r.fm = &p.fm;
     r.fm_path = p.path;
+    r.post = &p.vars;
     r.slots = slots;
     bool ok = r.doc(templ);
 
@@ -303,7 +329,29 @@ void Render.list(Doc *doc, Node *node) {
     }
   }
 
-  // The list.
+  // The list. With an item template, each entry is that template
+  // rendered with the post's frontmatter and ${post.*}.
+  if (!node.item.is_null()) {
+    Str item_path = site.resolve(doc, node.item, node.loc, true);
+    Doc *item = item_path.is_null() ? NULL : site.load(item_path, node.loc);
+    if (!item)
+      return;
+    if (item.active) {
+      node.loc.error("item template cycle: '%.*s' ends up listing itself", SF(item_path));
+      return;
+    }
+    for (int i = 0; i < nposts; i++) {
+      Render r = {};
+      r.site = site;
+      r.out = ego.out;
+      r.fm = &posts[i].fm;
+      r.fm_path = posts[i].path;
+      r.post = &posts[i].vars;
+      r.doc(item);
+    }
+    return;
+  }
+
   Buf *out = ego.out;
   out.pushz("<ul>\n");
   for (int i = 0; i < nposts; i++) {

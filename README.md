@@ -161,9 +161,27 @@ slot of `post.html`, and the tag is replaced with a list of links to them:
 | `sort`      | file name   | a frontmatter key to sort by |
 | `order`     | `ascending` | or `descending` |
 | `title`     | `title`     | the frontmatter key for the link text |
+| `item`      | a `<ul>`    | a template for each entry of the list |
 
 Two pages can list the same directory with the same template (say, the blog
 page and the home page); the posts are only built once.
+
+For more than a list of links, give it an `item` template. It's rendered
+once per post, in place of the `<ul>`, with that post's frontmatter:
+
+```html
+<div class="cards">
+  <sky-markdown directory="projects" template="project.html" item="card.html" />
+</div>
+```
+
+```html
+<!-- _imports/card.html -->
+<a class="card" href="${post.url}">
+  <img src="${frontmatter.image}" alt="" />
+  <h2>${post.title}</h2>
+</a>
+```
 
 Frontmatter goes at the very top of a markdown file:
 
@@ -203,7 +221,10 @@ like so:
 <h1>${frontmatter.title}</h1>
 ```
 
-Only `${meta.…}` and `${frontmatter.…}` are variables, so JavaScript template
+Post templates and `item` templates also get `${post.url}` (like
+`/projects/maudlin`) and `${post.title}` (the link text).
+
+Only `${meta.…}`, `${frontmatter.…}` and `${post.…}` are variables, so JavaScript template
 literals like `` `${user.name}` `` are left alone. To write a literal
 `${meta.x}`, write `$${meta.x}`. Variables aren't escaped, so values can
 contain HTML.

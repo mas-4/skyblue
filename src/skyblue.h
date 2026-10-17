@@ -163,7 +163,7 @@ extern Buf diag_log; // every diagnostic, uncolored, for the dev server
 
 typedef enum {
   TK_TEXT,    // literal HTML
-  TK_VAR,     // ${meta.key} or ${frontmatter.key}
+  TK_VAR,     // ${meta.key}, ${frontmatter.key} or ${post.key}
   TK_TAG,     // <sky-name attr="value"> or <sky-name ... />
   TK_END_TAG, // </sky-name>
   TK_EOF,
@@ -203,7 +203,7 @@ typedef enum {
   ND_INCLUDE,    // <sky-include path>
   ND_MD_INCLUDE, // <sky-md-include path>
   ND_SLOT,       // <sky-slot name>
-  ND_LIST,       // <sky-markdown directory template ...>
+  ND_LIST,       // <sky-markdown directory template [item] ...>
   ND_BLOCK,      // <sky-block name> ... </sky-block>
 } NodeKind;
 
@@ -221,6 +221,7 @@ struct Node {
 
   // ND_LIST
   Str templ;
+  Str item;  // template for each entry of the list, or absent
   Str sort;
   Str title;
   bool descending;
@@ -259,6 +260,7 @@ struct Render {
   Buf *out;
   Map *fm;        // frontmatter, while rendering a markdown post
   Str fm_path;    // the markdown file, for messages
+  Map *post;      // ${post.*}: url and title, while rendering a post
   Map *slots;     // slot name -> Slot*, while rendering a template
 
   bool doc(Doc *doc); // false if the template couldn't be rendered
