@@ -1,0 +1,4 @@
+site/posts/block.md:8:1: warning: expected 'key: value' in frontmatter
+    8 | not a pair
+      | ^
+skyblue: 3 pages and 0 files -> out (1 warning)

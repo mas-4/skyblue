@@ -1,6 +1,9 @@
-# skyblue is written in c' and built with cprime.
-# Point CPRIME at the compiler if it isn't checked out next door.
-CPRIME ?= ../cprime/cprime
+# skyblue is written in c' and built with cprime: a checkout next door
+# if there is one, otherwise the cprime in your PATH. Or set CPRIME.
+CPRIME ?= $(if $(wildcard ../cprime/cprime),../cprime/cprime,cprime)
+
+PREFIX = /usr/local
+BINDIR = $(PREFIX)/bin
 
 SRCS = $(wildcard src/*.dcdx)
 OBJS = $(SRCS:.dcdx=.o)
@@ -19,8 +22,14 @@ $(MD4C)/%.o: $(MD4C)/%.c
 test: skyblue
 	tests/run.sh ./skyblue
 
+install: skyblue
+	install -Dm755 skyblue $(DESTDIR)$(BINDIR)/skyblue
+
+uninstall:
+	rm -f $(DESTDIR)$(BINDIR)/skyblue
+
 clean:
 	rm -f skyblue src/*.o $(MD4C)/*.o
 	rm -rf tests/out
 
-.PHONY: test clean
+.PHONY: test install uninstall clean

@@ -27,16 +27,19 @@ So, this is for you, Sky Blue.
 # Building
 
 skyblue is written in c′ and compiled with
-[cprime](https://github.com/mas-4/cprime), the c′ compiler. With cprime
-checked out next to this repository:
+[cprime](https://github.com/mas-4/cprime), the c′ compiler. Install cprime
+(or check it out next to this repository), then:
 
 ```
-make            # builds ./skyblue
-make test       # golden tests and dev server tests
+make                              # builds ./skyblue
+make test                         # golden tests and dev server tests
+sudo make install                 # /usr/local/bin/skyblue
+make install PREFIX=~/.local      # or ~/.local/bin/skyblue
 ```
 
-Use `make CPRIME=/path/to/cprime` if the compiler lives somewhere else.
-cprime targets x86-64 Linux.
+The Makefile uses `../cprime/cprime` if it exists, otherwise `cprime` from
+your `PATH`; `make CPRIME=/path/to/cprime` overrides it. cprime targets
+x86-64 Linux.
 
 # Usage
 

@@ -11,12 +11,22 @@
 //   ---
 //   # The post...
 //
-// Values may be quoted. Returns the rest of the file.
+// Values may be quoted. An indented line continues the previous value,
+// as in YAML, so multi-line lists are kept as one value:
+//
+//   tags:
+//     [
+//       "c",
+//       "ssg",
+//     ]
+//
+// Returns the rest of the file.
 Str split_frontmatter(Source *src, Map *fm) {
   Str text = src.text;
   if (!text.starts_with("---\n") && !text.starts_with("---\r\n"))
     return text;
 
+  Str *prev = NULL;
   long pos = text.find_char('\n', 0) + 1;
   while (pos < text.len) {
     long end = text.find_char('\n', pos);
@@ -25,9 +35,16 @@ Str split_frontmatter(Source *src, Map *fm) {
       end = text.len;
     Str line = text.slice(pos, end).trim();
     Loc loc = {src, pos};
+    bool indented = text.ptr[pos] == ' ' || text.ptr[pos] == '\t';
 
     if (line.eqz("---"))
       return text.from(next);
+
+    if (indented && prev && line.len > 0) {
+      *prev = prev.len ? strf("%.*s %.*s", SF(*prev), SF(line)) : line;
+      pos = next;
+      continue;
+    }
 
     if (line.len > 0 && line.ptr[0] != '#') {
       long colon = line.find_char(':', 0);
@@ -43,6 +60,7 @@ Str split_frontmatter(Source *src, Map *fm) {
         Str *v = alloc(sizeof(Str));
         *v = val;
         fm.put(key, v);
+        prev = v;
       }
     }
     pos = next;
