@@ -258,7 +258,8 @@ like so:
 ```
 
 Post templates and `item` templates also get `${post.url}` (like
-`/projects/maudlin`) and `${post.title}` (the link text).
+`/projects/maudlin`), `${post.title}` (the link text) and `${post.body}`
+(the post, rendered), so a list can show whole posts and not only links.
 
 `${sky.…}` is about skyblue and the build, and works anywhere:
 

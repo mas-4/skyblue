@@ -131,7 +131,7 @@ void Render.var(Node *node) {
     if (val)
       ego.out.push(*val);
     else
-      node.loc.warn("there is no ${post.%.*s}; posts have url and title", SF(node.key));
+      node.loc.warn("there is no ${post.%.*s}; posts have url, title and body", SF(node.key));
     return;
   }
 
@@ -347,6 +347,8 @@ void Render.list(Doc *doc, Node *node) {
   for (int i = 0; i < nposts; i++) {
     put_var(&posts[i].vars, "url", posts[i].url);
     put_var(&posts[i].vars, "title", posts[i].title);
+    // The rendered markdown, so a list can show whole posts, not just links
+    put_var(&posts[i].vars, "body", markdown(posts[i].body));
   }
 
   // The pages. Two listings of the same directory with the same
@@ -363,7 +365,7 @@ void Render.list(Doc *doc, Node *node) {
 
     Map *slots = alloc(sizeof(Map));
     Slot *slot = alloc(sizeof(Slot));
-    slot.html = markdown(p.body);
+    slot.html = *(Str *)p.vars.get(S("body"));
     slot.loc = node.loc;
     slots.put(node.name, slot);
 
