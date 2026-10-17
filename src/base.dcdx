@@ -84,6 +84,27 @@ bool Str.starts_with(char *prefix) {
   return ego.len >= n && !memcmp(ego.ptr, prefix, n);
 }
 
+Str Str.replace(Str from, Str to) {
+  if (from.len == 0)
+    return *ego;
+  Buf out = {};
+  long pos = 0;
+  for (;;) {
+    long i = pos;
+    while (i + from.len <= ego.len && memcmp(ego.ptr + i, from.ptr, from.len))
+      i++;
+    if (i + from.len > ego.len)
+      break;
+    out.push(ego.slice(pos, i));
+    out.push(to);
+    pos = i + from.len;
+  }
+  if (pos == 0)
+    return *ego;
+  out.push(ego.from(pos));
+  return out.str();
+}
+
 bool Str.ends_with(char *suffix) {
   long n = strlen(suffix);
   return ego.len >= n && !memcmp(ego.ptr + ego.len - n, suffix, n);

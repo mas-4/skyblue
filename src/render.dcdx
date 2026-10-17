@@ -7,18 +7,24 @@
 // use templates too; a block can contain a <sky-slot>, which passes the
 // outer page's slot through. Includes are rendered in place, with the
 // same slots and frontmatter as the file that includes them.
+//
+// Every file a page uses is recorded in its Page, for <sky-sources>.
 
 Str render_page(Site *site, Doc *doc) {
   Buf out = {};
+  Page page = {};
   Render r = {};
   r.site = site;
   r.out = &out;
+  r.page = &page;
   r.doc(doc);
-  return out.str();
+  return page.finish(site, out.str());
 }
 
 bool Render.doc(Doc *doc) {
   doc.active = true;
+  if (ego.page)
+    ego.page.add(doc.src);
 
   if (doc.templ.is_null()) {
     ego.nodes(doc, doc.body);
@@ -93,6 +99,12 @@ void Render.node(Doc *doc, Node *node) {
   case ND_LIST:
     ego.list(doc, node);
     return;
+  case ND_SOURCE:
+    ego.show_source(doc, node);
+    return;
+  case ND_SOURCES:
+    ego.list_sources(doc, node);
+    return;
   case ND_BLOCK:
     // The parser reports blocks outside templated pages.
     return;
@@ -123,6 +135,25 @@ void Render.var(Node *node) {
     return;
   }
 
+  if (node.ns.eqz("source")) {
+    if (!ego.source) {
+      node.loc.warn("${source.%.*s} only has a value in a <sky-sources> item", SF(node.key));
+      return;
+    }
+    Str *val = ego.source.get(node.key);
+    if (val)
+      ego.out.push(*val);
+    else
+      node.loc.warn("there is no ${source.%.*s}; sources have path, code and lines",
+                    SF(node.key));
+    return;
+  }
+
+  if (node.ns.eqz("sky")) {
+    ego.sky_var(node);
+    return;
+  }
+
   // frontmatter
   if (!ego.fm) {
     node.loc.warn("${frontmatter.%.*s} only has a value in a markdown post's template",
@@ -134,6 +165,30 @@ void Render.var(Node *node) {
     ego.out.push(*val);
   else
     node.loc.warn("'%.*s' has no frontmatter key '%.*s'", SF(ego.fm_path), SF(node.key));
+}
+
+// ${sky.*}: facts about skyblue and this build. The counts aren't known
+// until every page has been rendered, so they're markers until then
+// (see Site.fill_counts).
+void Render.sky_var(Node *node) {
+  Str key = node.key;
+  if (key.eqz("version")) {
+    ego.out.pushz(SKYBLUE_VERSION);
+  } else if (key.eqz("compiler")) {
+    ego.out.pushz(COMPILER_VERSION);
+  } else if (key.eqz("date") || key.eqz("time")) {
+    time_t t = ego.site.date;
+    struct tm tm;
+    gmtime_r(&t, &tm);
+    char buf[32];
+    strftime(buf, sizeof(buf), key.eqz("date") ? "%Y-%m-%d" : "%H:%M UTC", &tm);
+    ego.out.pushz(buf);
+  } else if (key.eqz("pages") || key.eqz("files") || key.eqz("ms")) {
+    ego.out.push(strf("\x02sky.%.*s\x03", SF(key)));
+  } else {
+    node.loc.warn("there is no ${sky.%.*s}; skyblue has version, compiler, date, time, "
+                  "pages, files and ms", SF(key));
+  }
 }
 
 void Render.include(Doc *doc, Node *node) {
@@ -152,6 +207,8 @@ void Render.include(Doc *doc, Node *node) {
     return;
   }
 
+  if (ego.page)
+    ego.page.add(inc.src);
   inc.active = true;
   ego.nodes(inc, inc.body);
   inc.active = false;
@@ -164,6 +221,8 @@ void Render.md_include(Doc *doc, Node *node) {
   Source *src = ego.site.read(path, node.loc);
   if (!src)
     return;
+  if (ego.page)
+    ego.page.add(src);
   Map fm = {};
   ego.out.push(markdown(split_frontmatter(src, &fm)));
 }
@@ -191,6 +250,7 @@ struct Post {
   Str path;     // source path
   Str out;      // output path, e.g. "blog/hello.html"
   Str url;      // e.g. "/blog/hello"
+  Source *src;
   Str body;     // markdown, without frontmatter
   Str sort_key;
   Str title;
@@ -250,6 +310,7 @@ void Render.list(Doc *doc, Node *node) {
     Post *p = &posts[nposts++];
     p.name = names[i];
     p.path = path;
+    p.src = src;
     p.body = split_frontmatter(src, &p.fm);
     Str rel = strip_md(path_rel(site.root, path));
     p.out = strf("%.*s.html", SF(rel));
@@ -307,9 +368,12 @@ void Render.list(Doc *doc, Node *node) {
     slots.put(node.name, slot);
 
     Buf page = {};
+    Page *sources = alloc(sizeof(Page));
+    sources.add(p.src);
     Render r = {};
     r.site = site;
     r.out = &page;
+    r.page = sources;
     r.fm = &p.fm;
     r.fm_path = p.path;
     r.post = &p.vars;
@@ -322,7 +386,7 @@ void Render.list(Doc *doc, Node *node) {
 
     Output *o = site.add(p.out, p.path, node.loc);
     if (o) {
-      o.content = page.str();
+      o.content = sources.finish(site, page.str());
       o.templ = templ_path;
       site.npages++;
       debug("rendered %.*s -> %.*s", SF(p.path), SF(p.out));
@@ -344,6 +408,7 @@ void Render.list(Doc *doc, Node *node) {
       Render r = {};
       r.site = site;
       r.out = ego.out;
+      r.page = ego.page;
       r.fm = &posts[i].fm;
       r.fm_path = posts[i].path;
       r.post = &posts[i].vars;
@@ -362,4 +427,101 @@ void Render.list(Doc *doc, Node *node) {
     out.pushz("</a></li>\n");
   }
   out.pushz("</ul>\n");
+}
+
+//
+// <sky-source>: a file, or part of one, as a highlighted listing.
+//
+
+void Render.show_source(Doc *doc, Node *node) {
+  Str path = ego.site.resolve(doc, node.path, node.loc, false);
+  if (path.is_null())
+    return;
+  Source *src = ego.site.read(path, node.loc);
+  if (!src)
+    return;
+
+  // `from` is the first line that starts with it, ignoring indentation;
+  // `to` is the next line after that, at the same indentation, that
+  // starts with it. So from="void Render.slot" to="}" is a function.
+  // Without `to`, the listing runs to the end of the file.
+  long first = 1;
+  long last = count_lines(src.text);
+  if (!node.from.is_null()) {
+    long indent;
+    first = find_line(src.text, node.from, 1, -1, &indent);
+    if (!first) {
+      node.loc.error("no line in '%.*s' starts with \"%.*s\"", SF(path), SF(node.from));
+      return;
+    }
+    if (!node.to.is_null()) {
+      last = find_line(src.text, node.to, first + 1, indent, NULL);
+      if (!last) {
+        node.loc.error("no line in '%.*s' after line %ld starts with \"%.*s\"",
+                       SF(path), first, SF(node.to));
+        return;
+      }
+    }
+  }
+  ego.out.push(listing(src, first, last));
+}
+
+//
+// <sky-sources>: every file the page was built from, each rendered with
+// the item template.
+//
+
+void Render.list_sources(Doc *doc, Node *node) {
+  if (!ego.page) {
+    node.loc.warn("<sky-sources> only works in a page");
+    return;
+  }
+  Pending *p = alloc(sizeof(Pending));
+  p.doc = doc;
+  p.node = node;
+  p.marker = strf("\x02sky-sources %ld\x03", ego.page.npending++);
+  p.next = ego.page.pending;
+  ego.page.pending = p;
+  ego.out.push(p.marker);
+}
+
+void Page.add(Source *src) {
+  for (long i = 0; i < ego.nsrcs; i++)
+    if (ego.srcs[i] == src || ego.srcs[i].path.eq(src.path))
+      return;
+  if (ego.nsrcs == ego.cap) {
+    ego.cap = ego.cap ? ego.cap * 2 : 8;
+    Source **srcs = alloc(sizeof(Source *) * ego.cap);
+    if (ego.nsrcs)
+      memcpy(srcs, ego.srcs, sizeof(Source *) * ego.nsrcs);
+    ego.srcs = srcs;
+  }
+  ego.srcs[ego.nsrcs++] = src;
+}
+
+// Replace each <sky-sources> marker with its list. The item template
+// counts as one of the page's sources too.
+Str Page.finish(Site *site, Str html) {
+  for (Pending *p = ego.pending; p; p = p.next) {
+    Buf list = {};
+    Str item_path = site.resolve(p.doc, p.node.item, p.node.loc, true);
+    Doc *item = item_path.is_null() ? NULL : site.load(item_path, p.node.loc);
+    if (item) {
+      ego.add(item.src);
+      for (long i = 0; i < ego.nsrcs; i++) {
+        Source *src = ego.srcs[i];
+        Map vars = {};
+        put_var(&vars, "path", path_rel(site.root, src.path));
+        put_var(&vars, "code", listing(src, 1, count_lines(src.text)));
+        put_var(&vars, "lines", strf("%ld", count_lines(src.text)));
+        Render r = {};
+        r.site = site;
+        r.out = &list;
+        r.source = &vars;
+        r.doc(item);
+      }
+    }
+    html = html.replace(p.marker, list.str());
+  }
+  return html;
 }

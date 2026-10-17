@@ -64,8 +64,9 @@ long Lexer.space(long p) {
   return p;
 }
 
-// ${meta.key}, ${frontmatter.key} or ${post.key}. Anything else that
-// starts with "${", such as a JavaScript template literal, is left as text.
+// ${meta.key}, ${frontmatter.key}, ${post.key}, ${source.key} or
+// ${sky.key}. Anything else that starts with "${", such as a JavaScript
+// template literal, is left as text.
 bool Lexer.var(void) {
   long start = ego.pos;
   long p = start + 2;
@@ -78,7 +79,8 @@ bool Lexer.var(void) {
     return false;
 
   Str ns = ego.text.slice(p, ns_end);
-  if (!ns.eqz("meta") && !ns.eqz("frontmatter") && !ns.eqz("post"))
+  if (!ns.eqz("meta") && !ns.eqz("frontmatter") && !ns.eqz("post") && !ns.eqz("source") &&
+      !ns.eqz("sky"))
     return false;
 
   ego.flush(start);

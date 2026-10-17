@@ -7,20 +7,32 @@ site/index.html:1:1: error: unknown tag <sky-frob>
 site/index.html:2:1: error: <sky-include> needs a path attribute
     2 | <sky-include />
       | ^
-site/index.html:4:1: error: order must be "ascending" or "descending", not "sideways"
-    4 | <sky-markdown directory="posts" template="list.html" order="sideways" />
+site/index.html:6:1: error: <sky-source> needs a from attribute to go with to
+    6 | <sky-source path="list.html" to="x" />
       | ^
-site/index.html:5:1: error: </sky-block> doesn't close anything
-    5 | </sky-block>
+site/index.html:7:1: error: <sky-sources> needs an item attribute
+    7 | <sky-sources />
       | ^
-site/index.html:6:1: error: <sky-block> is never closed
-    6 | <sky-block name="x">never closed
+site/index.html:8:1: error: order must be "ascending" or "descending", not "sideways"
+    8 | <sky-markdown directory="posts" template="list.html" order="sideways" />
       | ^
-site/index.html:6:1: error: <sky-block> only works in a page that uses <sky-template>
-    6 | <sky-block name="x">never closed
+site/index.html:9:1: error: </sky-block> doesn't close anything
+    9 | </sky-block>
+      | ^
+site/index.html:10:1: error: <sky-block> is never closed
+   10 | <sky-block name="x">never closed
+      | ^
+site/index.html:10:1: error: <sky-block> only works in a page that uses <sky-template>
+   10 | <sky-block name="x">never closed
       | ^
 site/index.html:3:1: error: can't find 'missing.html' (looked for site/missing.html and site/_imports/missing.html)
     3 | <sky-include path="missing.html" />
+      | ^
+site/index.html:4:1: error: no line in 'site/list.html' starts with "nothing like this"
+    4 | <sky-source path="list.html" from="nothing like this" />
+      | ^
+site/index.html:5:1: error: no line in 'site/list.html' after line 1 starts with "nope"
+    5 | <sky-source path="list.html" from="<" to="nope" />
       | ^
 site/list.html:1:1: warning: <sky-slot> only has a value in a template
     1 | <sky-slot name="content" />
@@ -40,4 +52,4 @@ site/t2.html:2:21: warning: <sky-slot> only has a value in a template
 site/t1.html:1:1: error: template cycle: 'site/t2.html' ends up using itself
     1 | <sky-template path="t2.html" />
       | ^
-skyblue: 12 errors, 2 warnings; nothing was written
+skyblue: 16 errors, 2 warnings; nothing was written

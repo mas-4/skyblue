@@ -16,7 +16,7 @@ failed=0
 for dir in cases/*/; do
   dir=${dir%/}
   name=$(basename "$dir")
-  (cd "$dir" && rm -rf out && NO_COLOR=1 "$bin" -i site -o out > /dev/null 2> got-stderr; echo $? > got-status)
+  (cd "$dir" && rm -rf out && NO_COLOR=1 SOURCE_DATE_EPOCH=0 "$bin" -i site -o out > /dev/null 2> got-stderr; echo $? > got-status)
   status=$(cat "$dir/got-status")
 
   if [ "$update" = --update ]; then

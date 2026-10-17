@@ -1,0 +1,19 @@
+#include <stdio.h>
+
+// A greeter.
+struct Greeter {
+  char *name;
+  void greet(void);
+};
+
+void Greeter.greet(void) {
+  if (ego.name) {
+    printf("Hello, %s!\n", ego.name);
+  }
+}
+
+int main(void) {
+  struct Greeter g = {"world"};
+  g.greet();
+  return 0;
+}

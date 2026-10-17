@@ -5,6 +5,9 @@ CPRIME ?= $(if $(wildcard ../cprime/cprime),../cprime/cprime,cprime)
 PREFIX = /usr/local
 BINDIR = $(PREFIX)/bin
 
+# The commit skyblue is built from, for --version and ${sky.version}.
+VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo unknown)
+
 SRCS = $(wildcard src/*.dcdx)
 OBJS = $(SRCS:.dcdx=.o)
 MD4C = tpc/md4c
@@ -14,7 +17,7 @@ skyblue: $(OBJS) $(MD4C_OBJS)
 	$(CPRIME) -o $@ $^
 
 src/%.o: src/%.dcdx src/skyblue.h
-	$(CPRIME) -I$(MD4C) -c -o $@ $<
+	$(CPRIME) -I$(MD4C) -DSKYBLUE_VERSION='"$(VERSION)"' -c -o $@ $<
 
 $(MD4C)/%.o: $(MD4C)/%.c
 	$(CPRIME) -I$(MD4C) -c -o $@ $<

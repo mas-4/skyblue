@@ -1,0 +1,26 @@
+<title>Sources</title>
+<h1>First</h1><p>Hello.</p>
+
+<footer>2 pages and 1 files, 1970-01-01 00:00 UTC</footer>
+
+<!-- what this page is made of -->
+<pre data-path="notes/first.md" data-lines="5"><span class="line" data-line="1"><span class="com">---</span></span>
+<span class="line" data-line="2"><span class="kw">title</span>: <span class="str">&quot;First&quot;</span></span>
+<span class="line" data-line="3"><span class="kw">tags</span>: <span class="str">[&quot;a&quot;, &quot;b&quot;]</span></span>
+<span class="line" data-line="4"><span class="com">---</span></span>
+<span class="line" data-line="5">Hello.</span>
+</pre>
+<pre data-path="_imports/note.html" data-lines="2"><span class="line" data-line="1"><span class="sky">&lt;sky-template path=</span><span class="str">&quot;main.html&quot;</span><span class="sky"> /&gt;</span></span>
+<span class="line" data-line="2"><span class="sky">&lt;sky-block name=</span><span class="str">&quot;content&quot;</span><span class="sky">&gt;</span><span class="tag">&lt;h1&gt;</span><span class="var">${post.title}</span><span class="tag">&lt;/h1&gt;</span><span class="sky">&lt;sky-slot name=</span><span class="str">&quot;content&quot;</span><span class="sky"> /&gt;</span><span class="sky">&lt;/sky-block&gt;</span></span>
+</pre>
+<pre data-path="_imports/main.html" data-lines="5"><span class="line" data-line="1"><span class="tag">&lt;title&gt;</span><span class="var">${meta.title}</span><span class="tag">&lt;/title&gt;</span></span>
+<span class="line" data-line="2"><span class="sky">&lt;sky-slot name=</span><span class="str">&quot;content&quot;</span><span class="sky"> /&gt;</span></span>
+<span class="line" data-line="3"><span class="sky">&lt;sky-include path=</span><span class="str">&quot;foot.html&quot;</span><span class="sky"> /&gt;</span></span>
+<span class="line" data-line="4"><span class="com">&lt;!-- what this page is made of --&gt;</span></span>
+<span class="line" data-line="5"><span class="sky">&lt;sky-sources item=</span><span class="str">&quot;source.html&quot;</span><span class="sky"> /&gt;</span></span>
+</pre>
+<pre data-path="_imports/foot.html" data-lines="1"><span class="line" data-line="1"><span class="tag">&lt;footer&gt;</span><span class="var">${sky.pages}</span> pages and <span class="var">${sky.files}</span> files, <span class="var">${sky.date}</span> <span class="var">${sky.time}</span><span class="tag">&lt;/footer&gt;</span></span>
+</pre>
+<pre data-path="_imports/source.html" data-lines="1"><span class="line" data-line="1"><span class="tag">&lt;pre data-path=&quot;</span><span class="var">${source.path}</span>&quot; data-lines=&quot;<span class="var">${source.lines}</span>&quot;&gt;<span class="var">${source.code}</span><span class="tag">&lt;/pre&gt;</span></span>
+</pre>
+

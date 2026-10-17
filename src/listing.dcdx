@@ -1,0 +1,375 @@
+#include "skyblue.h"
+
+// Source listings, for <sky-source> and <sky-sources>: a file as HTML,
+// one <span class="line" data-line="N"> per line, highlighted according
+// to what the file is. Templates are highlighted by skyblue's own lexer,
+// so a listing shows exactly what skyblue sees.
+//
+// The highlighted spans have these classes:
+//
+//   sky   skyblue tags            var   ${ns.key} variables
+//   tag   HTML tags               str   strings and attribute values
+//   com   comments                kw    keywords, frontmatter keys
+//   type  type names              ego   the c′ receiver
+//   pp    preprocessor lines      num   numbers
+
+#include <ctype.h>
+
+// <ctype.h> wants unsigned chars, and text is UTF-8.
+#define CT(f, c) f((unsigned char)(c))
+
+typedef struct Listing Listing;
+struct Listing {
+  Buf *out;
+  long line;  // the line being written, from 1
+  long first; // the lines to write
+  long last;
+  bool open;  // a line's <span> is open
+
+  void add(Str s, char *cls);
+  void begin_line(void);
+  void end_line(void);
+};
+
+void Listing.begin_line(void) {
+  if (ego.open || ego.line < ego.first || ego.line > ego.last)
+    return;
+  ego.out.fmt("<span class=\"line\" data-line=\"%ld\">", ego.line);
+  ego.open = true;
+}
+
+void Listing.end_line(void) {
+  if (ego.open)
+    ego.out.pushz("</span>\n");
+  ego.open = false;
+  ego.line++;
+}
+
+// Write `s`, inside <span class="cls"> unless cls is NULL. A span never
+// crosses a line break, so every line stands on its own.
+void Listing.add(Str s, char *cls) {
+  long i = 0;
+  while (i < s.len) {
+    long nl = s.find_char('\n', i);
+    long end = nl < 0 ? s.len : nl;
+    if (end > i) {
+      ego.begin_line();
+      if (ego.open) {
+        if (cls)
+          ego.out.fmt("<span class=\"%s\">", cls);
+        ego.out.html(s.slice(i, end));
+        if (cls)
+          ego.out.pushz("</span>");
+      }
+    }
+    if (nl < 0)
+      return;
+    ego.begin_line();
+    ego.end_line();
+    i = nl + 1;
+  }
+}
+
+//
+// Templates
+//
+
+// A tag, HTML or skyblue: quoted attribute values are strings, the rest
+// is `cls`.
+static void tag(Listing *l, Str s, char *cls) {
+  long plain = 0;
+  for (long i = 0; i < s.len; i++) {
+    char q = s.ptr[i];
+    if (q != '"' && q != '\'')
+      continue;
+    long close = s.find_char(q, i + 1);
+    if (close < 0)
+      break;
+    l.add(s.slice(plain, i), cls);
+    l.add(s.slice(i, close + 1), "str");
+    plain = i = close + 1;
+    i--;
+  }
+  l.add(s.from(plain), cls);
+}
+
+// Literal HTML: comments and tags.
+static void html(Listing *l, Str s) {
+  long plain = 0;
+  long i = 0;
+  while (i < s.len) {
+    Str rest = s.from(i);
+    long end = -1;
+    bool comment = false;
+    if (rest.starts_with("<!--")) {
+      end = s.find("-->", i + 4);
+      end = end < 0 ? s.len : end + 3;
+      comment = true;
+    } else if (s.ptr[i] == '<' && i + 1 < s.len &&
+               (CT(isalpha, s.ptr[i + 1]) || s.ptr[i + 1] == '/' || s.ptr[i + 1] == '!')) {
+      end = s.find_char('>', i);
+      end = end < 0 ? s.len : end + 1;
+    }
+    if (end < 0) {
+      i++;
+      continue;
+    }
+    l.add(s.slice(plain, i), NULL);
+    if (comment)
+      l.add(s.slice(i, end), "com");
+    else
+      tag(l, s.slice(i, end), "tag");
+    plain = i = end;
+  }
+  l.add(s.from(plain), NULL);
+}
+
+// Tokens are contiguous, so each one runs to where the next begins.
+static void template(Listing *l, Source *src) {
+  Str text = src.text;
+  for (Token *tok = lex(src); tok && tok.kind != TK_EOF; tok = tok.next) {
+    Str s = text.slice(tok.loc.off, tok.next ? tok.next.loc.off : text.len);
+    if (tok.kind == TK_VAR)
+      l.add(s, "var");
+    else if (tok.kind == TK_TAG || tok.kind == TK_END_TAG)
+      tag(l, s, "sky");
+    else
+      html(l, s);
+  }
+}
+
+//
+// C and c′
+//
+
+static char *keywords[] = {
+  "auto", "bool", "break", "case", "char", "const", "continue", "default",
+  "do", "double", "else", "enum", "extern", "false", "float", "for", "goto",
+  "if", "inline", "int", "long", "NULL", "register", "restrict", "return",
+  "short", "signed", "sizeof", "static", "struct", "switch", "true",
+  "typedef", "union", "unsigned", "void", "volatile", "while", NULL,
+};
+
+static char *word_class(Str w) {
+  if (w.eqz("ego"))
+    return "ego";
+  for (char **k = keywords; *k; k++)
+    if (w.eqz(*k))
+      return "kw";
+  // Type names are capitalized words like Str and Render, not macros
+  // like SF or ND_TEXT.
+  if (CT(isupper, w.ptr[0])) {
+    for (long i = 1; i < w.len; i++)
+      if (CT(islower, w.ptr[i]))
+        return "type";
+  }
+  return NULL;
+}
+
+static bool is_ident(char c) {
+  return CT(isalnum, c) || c == '_';
+}
+
+static void c_code(Listing *l, Str s) {
+  long plain = 0;
+  long i = 0;
+  bool line_start = true; // only whitespace so far on this line
+
+  while (i < s.len) {
+    char c = s.ptr[i];
+    Str rest = s.from(i);
+    long end = -1;
+    char *cls = NULL;
+
+    if (c == '\n') {
+      line_start = true;
+      i++;
+      continue;
+    }
+
+    if (c == '#' && line_start) {
+      end = s.find_char('\n', i);
+      end = end < 0 ? s.len : end;
+      cls = "pp";
+    } else if (rest.starts_with("//")) {
+      end = s.find_char('\n', i);
+      end = end < 0 ? s.len : end;
+      cls = "com";
+    } else if (rest.starts_with("/*")) {
+      end = s.find("*/", i + 2);
+      end = end < 0 ? s.len : end + 2;
+      cls = "com";
+    } else if (c == '"' || c == '\'') {
+      long j = i + 1;
+      while (j < s.len && s.ptr[j] != c && s.ptr[j] != '\n')
+        j += s.ptr[j] == '\\' ? 2 : 1;
+      end = j < s.len ? j + 1 : s.len;
+      cls = "str";
+    } else if (CT(isalpha, c) || c == '_') {
+      end = i;
+      while (end < s.len && is_ident(s.ptr[end]))
+        end++;
+      cls = word_class(s.slice(i, end));
+    } else if (CT(isdigit, c)) {
+      end = i;
+      while (end < s.len && (is_ident(s.ptr[end]) || s.ptr[end] == '.'))
+        end++;
+      cls = "num";
+    }
+
+    if (!CT(isspace, c))
+      line_start = false;
+    if (end < 0) {
+      i++;
+      continue;
+    }
+    if (end > s.len)
+      end = s.len;
+    if (cls) {
+      l.add(s.slice(plain, i), NULL);
+      l.add(s.slice(i, end), cls);
+      plain = end;
+    }
+    i = end;
+  }
+  l.add(s.from(plain), NULL);
+}
+
+//
+// Shell scripts and makefiles: comments and strings.
+//
+
+static void sh_code(Listing *l, Str s) {
+  long plain = 0;
+  long i = 0;
+  while (i < s.len) {
+    char c = s.ptr[i];
+    long end = -1;
+    char *cls = NULL;
+    if (c == '#' && (i == 0 || CT(isspace, s.ptr[i - 1]))) {
+      end = s.find_char('\n', i);
+      end = end < 0 ? s.len : end;
+      cls = "com";
+    } else if (c == '"' || c == '\'') {
+      long j = i + 1;
+      while (j < s.len && s.ptr[j] != c)
+        j += c == '"' && s.ptr[j] == '\\' ? 2 : 1;
+      end = j < s.len ? j + 1 : s.len;
+      cls = "str";
+    }
+    if (end < 0) {
+      i++;
+      continue;
+    }
+    l.add(s.slice(plain, i), NULL);
+    l.add(s.slice(i, end), cls);
+    plain = i = end;
+  }
+  l.add(s.from(plain), NULL);
+}
+
+//
+// Markdown: just the frontmatter, as keys and values.
+//
+
+static void markdown_code(Listing *l, Str s) {
+  if (!s.starts_with("---\n")) {
+    l.add(s, NULL);
+    return;
+  }
+  long end = s.find("\n---", 3);
+  end = end < 0 ? s.len : end + 1;
+
+  l.add(S("---\n"), "com");
+  long pos = 4;
+  while (pos < end) {
+    long nl = s.find_char('\n', pos);
+    nl = nl < 0 || nl >= end ? end : nl + 1;
+    Str line = s.slice(pos, nl);
+    long colon = line.find_char(':', 0);
+    if (colon > 0 && !CT(isspace, line.ptr[0])) {
+      l.add(line.slice(0, colon), "kw");
+      l.add(line.slice(colon, colon + 1), NULL);
+      Str val = line.from(colon + 1);
+      long ws = 0;
+      while (ws < val.len && val.ptr[ws] == ' ')
+        ws++;
+      l.add(val.slice(0, ws), NULL);
+      l.add(val.from(ws), "str");
+    } else {
+      l.add(line, "str");
+    }
+    pos = nl;
+  }
+
+  long rest = s.find_char('\n', end);
+  rest = rest < 0 ? s.len : rest + 1;
+  l.add(s.slice(end, rest), "com");
+  l.add(s.from(rest), NULL);
+}
+
+Str listing(Source *src, long first, long last) {
+  Buf out = {};
+  Listing l = {};
+  l.out = &out;
+  l.line = 1;
+  l.first = first;
+  l.last = last;
+
+  Str path = src.path;
+  if (path.ends_with(".html") || path.ends_with(".htm"))
+    template(&l, src);
+  else if (path.ends_with(".dcdx") || path.ends_with(".cpr") || path.ends_with(".c") ||
+           path.ends_with(".h"))
+    c_code(&l, src.text);
+  else if (path.ends_with(".sh") || path.ends_with("Makefile") || path.ends_with(".mk"))
+    sh_code(&l, src.text);
+  else if (path.ends_with(".md"))
+    markdown_code(&l, src.text);
+  else
+    l.add(src.text, NULL);
+
+  if (l.open)
+    l.end_line();
+  return out.str();
+}
+
+long count_lines(Str text) {
+  long n = 0;
+  for (long i = 0; i < text.len; i++)
+    if (text.ptr[i] == '\n')
+      n++;
+  if (text.len > 0 && text.ptr[text.len - 1] != '\n')
+    n++;
+  return n;
+}
+
+// The line number of the first line, at or after line `from`, whose
+// text starts with `prefix` once its indentation is skipped. If `indent`
+// isn't negative, the line must also be indented by exactly that much.
+// Returns 0 if there's no such line.
+long find_line(Str text, Str prefix, long from, long indent, long *found_indent) {
+  long line = 1;
+  long pos = 0;
+  while (pos < text.len) {
+    long nl = text.find_char('\n', pos);
+    long end = nl < 0 ? text.len : nl;
+    if (line >= from) {
+      long ws = pos;
+      while (ws < end && (text.ptr[ws] == ' ' || text.ptr[ws] == '\t'))
+        ws++;
+      Str rest = text.slice(ws, end);
+      if ((indent < 0 || ws - pos == indent) && rest.len >= prefix.len &&
+          rest.slice(0, prefix.len).eq(prefix)) {
+        if (found_indent)
+          *found_indent = ws - pos;
+        return line;
+      }
+    }
+    if (nl < 0)
+      break;
+    pos = nl + 1;
+    line++;
+  }
+  return 0;
+}

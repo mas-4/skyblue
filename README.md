@@ -194,6 +194,42 @@ date: "2024-01-31"
 
 Markdown supports tables, strikethrough, task lists and autolinks.
 
+## Source listings
+
+`<sky-source>` shows a file as source code: HTML-escaped, highlighted,
+and one `<span class="line" data-line="N">` per line, so CSS can number
+the lines. It's meant to go inside a `<pre>`:
+
+```html
+<pre><code><sky-source path="../skyblue/src/render.dcdx" from="void Render.slot" to="}" /></code></pre>
+```
+
+`from` starts the listing at the first line that begins with it (ignoring
+indentation), and `to` ends it at the next line, indented the same, that
+begins with it, so the example is one function. Without `from` it's the
+whole file; without `to` it runs to the end. Paths can be outside the site.
+
+`<sky-sources item="source.html" />` lists every file the page was built
+from, in the order skyblue used them: the page (or markdown post), its
+templates, its includes, and the item template itself. Each one is
+rendered with the item template, which gets `${source.path}` (relative to
+the site), `${source.code}` (the whole file, as `<sky-source>` would show
+it) and `${source.lines}`:
+
+```html
+<details>
+  <summary>${source.path}, ${source.lines} lines</summary>
+  <pre><code>${source.code}</code></pre>
+</details>
+```
+
+Put it in your main template and every page carries its own source.
+
+Templates are highlighted with skyblue's own lexer, C and c′ with a small
+highlighter, shell scripts and makefiles for comments and strings, and
+markdown frontmatter by key. The spans' classes are
+`sky`, `var`, `tag`, `str`, `com`, `kw`, `type`, `ego`, `pp` and `num`.
+
 ## Variables
 
 Finally, you can use variables from a `meta` file in the root of the site
@@ -224,8 +260,19 @@ like so:
 Post templates and `item` templates also get `${post.url}` (like
 `/projects/maudlin`) and `${post.title}` (the link text).
 
-Only `${meta.…}`, `${frontmatter.…}` and `${post.…}` are variables, so JavaScript template
-literals like `` `${user.name}` `` are left alone. To write a literal
+`${sky.…}` is about skyblue and the build, and works anywhere:
+
+| Variable | Value |
+|---|---|
+| `${sky.version}` | the commit skyblue was built from |
+| `${sky.compiler}` | the version of cprime that compiled skyblue |
+| `${sky.date}`, `${sky.time}` | when the site was built: `2026-10-17`, `18:22 UTC` (or [`SOURCE_DATE_EPOCH`](https://reproducible-builds.org/specs/source-date-epoch/)) |
+| `${sky.pages}`, `${sky.files}` | how many pages were rendered and files copied |
+| `${sky.ms}` | how many milliseconds the build took |
+
+Only `${meta.…}`, `${frontmatter.…}`, `${post.…}`, `${source.…}` and
+`${sky.…}` are variables, so JavaScript template literals like
+`` `${user.name}` `` are left alone. To write a literal
 `${meta.x}`, write `$${meta.x}`. Variables aren't escaped, so values can
 contain HTML.
 

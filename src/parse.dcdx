@@ -3,7 +3,7 @@
 // The parser turns tokens into a document:
 //
 //   doc      = (text | var | include | md-include | slot | markdown
-//               | template | block)*
+//               | source | sources | template | block)*
 //   block    = <sky-block name> (text | var | include | ...)* </sky-block>
 //            | <sky-block name />
 //
@@ -34,7 +34,8 @@ Str Parser.required(Token *tok, char *name, char *alias) {
   if (val.is_null() && alias)
     val = tok.attr(alias);
   if (val.is_null()) {
-    tok.loc.error("<sky-%.*s> needs a %s attribute", SF(tok.text), name);
+    tok.loc.error("<sky-%.*s> needs %s %s attribute", SF(tok.text),
+                  strchr("aeiou", name[0]) ? "an" : "a", name);
     return S("");
   }
   if (val.is_blank())
@@ -128,6 +129,22 @@ Node *Parser.tag(Token *tok, Token *block) {
       node.descending = true;
     else if (!order.eqz("ascending") && !order.eqz("asc"))
       tok.loc.error("order must be \"ascending\" or \"descending\", not \"%.*s\"", SF(order));
+    return node;
+  }
+
+  if (name.eqz("source")) {
+    Node *node = ego.new_node(ND_SOURCE, tok);
+    node.path = ego.required(tok, "path", NULL);
+    node.from = tok.attr("from");
+    node.to = tok.attr("to");
+    if (!node.to.is_null() && node.from.is_null())
+      tok.loc.error("<sky-source> needs a from attribute to go with to");
+    return node;
+  }
+
+  if (name.eqz("sources")) {
+    Node *node = ego.new_node(ND_SOURCES, tok);
+    node.item = ego.required(tok, "item", NULL);
     return node;
   }
 

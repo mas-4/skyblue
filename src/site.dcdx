@@ -24,10 +24,37 @@ Site *build_site(char *input, char *output) {
   return site;
 }
 
+static long now_ms(void) {
+  struct timespec ts;
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+  return ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
+
 void Site.build() {
+  ego.started = now_ms();
+  // For reproducible builds: https://reproducible-builds.org/specs/source-date-epoch/
+  char *epoch = getenv("SOURCE_DATE_EPOCH");
+  ego.date = epoch ? atol(epoch) : time(NULL);
+
   ego.load_meta();
   ego.walk(ego.root);
+  ego.fill_counts();
   debug("%d pages, %d files", ego.npages, ego.nfiles);
+}
+
+// Now that every page is rendered, ${sky.pages}, ${sky.files} and
+// ${sky.ms} have values.
+void Site.fill_counts() {
+  Str pages = strf("%d", ego.npages);
+  Str files = strf("%d", ego.nfiles);
+  Str ms = strf("%ld", now_ms() - ego.started);
+  for (Output *o = ego.first; o; o = o.next) {
+    if (o.content.find("\x02sky.", 0) < 0)
+      continue;
+    o.content = o.content.replace(S("\x02sky.pages\x03"), pages)
+                         .replace(S("\x02sky.files\x03"), files)
+                         .replace(S("\x02sky.ms\x03"), ms);
+  }
 }
 
 // key=value lines. Blank lines and lines starting with # are ignored.

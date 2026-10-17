@@ -11,7 +11,8 @@ static void usage(int status) {
           "  -o <dir>        where to write the site (default: build)\n"
           "  -s              run the development server on 127.0.0.1:8080\n"
           "  -h <host:port>  run the development server on this address\n"
-          "  -v              verbose\n");
+          "  -v              verbose\n"
+          "  --version       print skyblue's version and the cprime that compiled it\n");
   exit(status);
 }
 
@@ -21,6 +22,11 @@ static char *plural(int n) {
 
 int main(int argc, char **argv) {
   config.output = "build";
+
+  if (argc == 2 && !strcmp(argv[1], "--version")) {
+    printf("skyblue %s (compiled by cprime %s)\n", SKYBLUE_VERSION, COMPILER_VERSION);
+    return 0;
+  }
 
   int c;
   while ((c = getopt(argc, argv, "i:o:h:sv")) != -1) {

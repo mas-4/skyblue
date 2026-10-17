@@ -1,0 +1,43 @@
+<title>Sources</title>
+
+  <span class="line" data-line="9"><span class="kw">void</span> <span class="type">Greeter</span>.greet(<span class="kw">void</span>) {</span>
+<span class="line" data-line="10">  <span class="kw">if</span> (<span class="ego">ego</span>.name) {</span>
+<span class="line" data-line="11">    printf(<span class="str">&quot;Hello, %s!\n&quot;</span>, <span class="ego">ego</span>.name);</span>
+<span class="line" data-line="12">  }</span>
+<span class="line" data-line="13">}</span>
+
+  <span class="line" data-line="15"><span class="kw">int</span> main(<span class="kw">void</span>) {</span>
+<span class="line" data-line="16">  <span class="kw">struct</span> <span class="type">Greeter</span> g = {<span class="str">&quot;world&quot;</span>};</span>
+<span class="line" data-line="17">  g.greet();</span>
+<span class="line" data-line="18">  <span class="kw">return</span> <span class="num">0</span>;</span>
+<span class="line" data-line="19">}</span>
+
+  <span class="line" data-line="1"><span class="tag">&lt;pre data-path=&quot;</span><span class="var">${source.path}</span>&quot; data-lines=&quot;<span class="var">${source.lines}</span>&quot;&gt;<span class="var">${source.code}</span><span class="tag">&lt;/pre&gt;</span></span>
+
+  <ul>
+<li><a href="/notes/first">First</a></li>
+</ul>
+
+
+<footer>2 pages and 1 files, 1970-01-01 00:00 UTC</footer>
+
+<!-- what this page is made of -->
+<pre data-path="index.html" data-lines="7"><span class="line" data-line="1"><span class="sky">&lt;sky-template path=</span><span class="str">&quot;main.html&quot;</span><span class="sky"> /&gt;</span></span>
+<span class="line" data-line="2"><span class="sky">&lt;sky-block name=</span><span class="str">&quot;content&quot;</span><span class="sky">&gt;</span></span>
+<span class="line" data-line="3">  <span class="sky">&lt;sky-source path=</span><span class="str">&quot;code/hello.dcdx&quot;</span><span class="sky"> from=</span><span class="str">&quot;void Greeter.greet&quot;</span><span class="sky"> to=</span><span class="str">&quot;}&quot;</span><span class="sky"> /&gt;</span></span>
+<span class="line" data-line="4">  <span class="sky">&lt;sky-source path=</span><span class="str">&quot;code/hello.dcdx&quot;</span><span class="sky"> from=</span><span class="str">&quot;int main&quot;</span><span class="sky"> /&gt;</span></span>
+<span class="line" data-line="5">  <span class="sky">&lt;sky-source path=</span><span class="str">&quot;/_imports/source.html&quot;</span><span class="sky"> /&gt;</span></span>
+<span class="line" data-line="6">  <span class="sky">&lt;sky-markdown directory=</span><span class="str">&quot;notes&quot;</span><span class="sky"> template=</span><span class="str">&quot;note.html&quot;</span><span class="sky"> /&gt;</span></span>
+<span class="line" data-line="7"><span class="sky">&lt;/sky-block&gt;</span></span>
+</pre>
+<pre data-path="_imports/main.html" data-lines="5"><span class="line" data-line="1"><span class="tag">&lt;title&gt;</span><span class="var">${meta.title}</span><span class="tag">&lt;/title&gt;</span></span>
+<span class="line" data-line="2"><span class="sky">&lt;sky-slot name=</span><span class="str">&quot;content&quot;</span><span class="sky"> /&gt;</span></span>
+<span class="line" data-line="3"><span class="sky">&lt;sky-include path=</span><span class="str">&quot;foot.html&quot;</span><span class="sky"> /&gt;</span></span>
+<span class="line" data-line="4"><span class="com">&lt;!-- what this page is made of --&gt;</span></span>
+<span class="line" data-line="5"><span class="sky">&lt;sky-sources item=</span><span class="str">&quot;source.html&quot;</span><span class="sky"> /&gt;</span></span>
+</pre>
+<pre data-path="_imports/foot.html" data-lines="1"><span class="line" data-line="1"><span class="tag">&lt;footer&gt;</span><span class="var">${sky.pages}</span> pages and <span class="var">${sky.files}</span> files, <span class="var">${sky.date}</span> <span class="var">${sky.time}</span><span class="tag">&lt;/footer&gt;</span></span>
+</pre>
+<pre data-path="_imports/source.html" data-lines="1"><span class="line" data-line="1"><span class="tag">&lt;pre data-path=&quot;</span><span class="var">${source.path}</span>&quot; data-lines=&quot;<span class="var">${source.lines}</span>&quot;&gt;<span class="var">${source.code}</span><span class="tag">&lt;/pre&gt;</span></span>
+</pre>
+

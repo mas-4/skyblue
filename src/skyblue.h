@@ -3,6 +3,7 @@
 //   lex.dcdx     source text -> tokens
 //   parse.dcdx   tokens -> documents (ASTs)
 //   render.dcdx  documents -> HTML (includes, templates, variables, listings)
+//   listing.dcdx source files -> highlighted HTML, for <sky-source(s)>
 //   site.dcdx    finds the input files, builds every page, writes the output
 //   server.dcdx  development server that rebuilds when the input changes
 //
@@ -19,7 +20,19 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <time.h>
 #include <unistd.h>
+
+// The Makefile sets SKYBLUE_VERSION to the commit skyblue is built from.
+// cprime says which version of it is compiling skyblue.
+#ifndef SKYBLUE_VERSION
+#define SKYBLUE_VERSION "unknown"
+#endif
+#ifdef __CPRIME_VERSION__
+#define COMPILER_VERSION __CPRIME_VERSION__
+#else
+#define COMPILER_VERSION "unknown"
+#endif
 
 typedef struct Arena Arena;
 typedef struct Chunk Chunk;
@@ -35,6 +48,8 @@ typedef struct Node Node;
 typedef struct Doc Doc;
 typedef struct Slot Slot;
 typedef struct Render Render;
+typedef struct Page Page;
+typedef struct Pending Pending;
 typedef struct Output Output;
 typedef struct Site Site;
 typedef struct Config Config;
@@ -63,6 +78,7 @@ struct Str {
   bool eqz(char *s);
   int cmp(Str s);
   bool starts_with(char *prefix);
+  Str replace(Str from, Str to);       // every occurrence
   bool ends_with(char *suffix);
   long find(char *needle, long from);  // -1 if not found
   long find_char(char c, long from);   // -1 if not found
@@ -163,7 +179,7 @@ extern Buf diag_log; // every diagnostic, uncolored, for the dev server
 
 typedef enum {
   TK_TEXT,    // literal HTML
-  TK_VAR,     // ${meta.key}, ${frontmatter.key} or ${post.key}
+  TK_VAR,     // ${ns.key}: meta, frontmatter, post, source or sky
   TK_TAG,     // <sky-name attr="value"> or <sky-name ... />
   TK_END_TAG, // </sky-name>
   TK_EOF,
@@ -205,6 +221,8 @@ typedef enum {
   ND_SLOT,       // <sky-slot name>
   ND_LIST,       // <sky-markdown directory template [item] ...>
   ND_BLOCK,      // <sky-block name> ... </sky-block>
+  ND_SOURCE,     // <sky-source path [from] [to]>
+  ND_SOURCES,    // <sky-sources item>
 } NodeKind;
 
 struct Node {
@@ -215,13 +233,17 @@ struct Node {
   Str text;  // ND_TEXT
   Str ns;    // ND_VAR
   Str key;   // ND_VAR
-  Str path;  // ND_INCLUDE, ND_MD_INCLUDE; ND_LIST: the directory
+  Str path;  // ND_INCLUDE, ND_MD_INCLUDE, ND_SOURCE; ND_LIST: the directory
   Str name;  // ND_SLOT, ND_BLOCK; ND_LIST: slot the post goes into
   Node *body; // ND_BLOCK
 
+  // ND_SOURCE: the lines to show
+  Str from;
+  Str to;
+
   // ND_LIST
   Str templ;
-  Str item;  // template for each entry of the list, or absent
+  Str item;  // template for each entry of the list, or absent; ND_SOURCES too
   Str sort;
   Str title;
   bool descending;
@@ -255,25 +277,61 @@ struct Slot {
   bool used;
 };
 
+// What a page was built from: the page, its templates and includes, in
+// the order they were used. <sky-sources> lists them, so it can only be
+// rendered once the rest of the page has been; until then, the page has
+// a marker where each list goes.
+struct Pending {
+  Pending *next;
+  Doc *doc;
+  Node *node;
+  Str marker;
+};
+
+struct Page {
+  Source **srcs;
+  long nsrcs;
+  long cap;
+  Pending *pending;
+  long npending;
+
+  void add(Source *src); // once each
+  Str finish(Site *site, Str html);
+};
+
 struct Render {
   Site *site;
   Buf *out;
+  Page *page;     // the page being rendered, for <sky-sources>
   Map *fm;        // frontmatter, while rendering a markdown post
   Str fm_path;    // the markdown file, for messages
   Map *post;      // ${post.*}: url and title, while rendering a post
+  Map *source;    // ${source.*}: path, code and lines, in <sky-sources>
   Map *slots;     // slot name -> Slot*, while rendering a template
 
   bool doc(Doc *doc); // false if the template couldn't be rendered
   void nodes(Doc *doc, Node *node);
   void node(Doc *doc, Node *node);
   void var(Node *node);
+  void sky_var(Node *node);
   void include(Doc *doc, Node *node);
   void md_include(Doc *doc, Node *node);
   void slot(Node *node);
   void list(Doc *doc, Node *node);
+  void show_source(Doc *doc, Node *node);
+  void list_sources(Doc *doc, Node *node);
 };
 
 Str render_page(Site *site, Doc *doc);
+
+//
+// listing.dcdx
+//
+
+// Lines first..last of a file, highlighted, one <span class="line"> each.
+Str listing(Source *src, long first, long last);
+long count_lines(Str text);
+long find_line(Str text, Str prefix, long from, long indent, long *found_indent);
 
 //
 // site.dcdx
@@ -298,8 +356,11 @@ struct Site {
   Output *last;
   int npages;
   int nfiles;
+  long started;  // for ${sky.ms}: milliseconds, from a monotonic clock
+  long date;     // for ${sky.date} and ${sky.time}: seconds since 1970
 
   void build();
+  void fill_counts();
   void walk(Str dir);
   void load_meta();
   Source *read(Str path, Loc loc);
