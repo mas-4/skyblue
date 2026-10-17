@@ -1,0 +1,68 @@
+#include "skyblue.h"
+
+#include "md4c-html.h"
+
+// Frontmatter is a block of `key: value` lines between two `---` lines
+// at the very start of a markdown file:
+//
+//   ---
+//   title: Hello
+//   date: "2024-01-31"
+//   ---
+//   # The post...
+//
+// Values may be quoted. Returns the rest of the file.
+Str split_frontmatter(Source *src, Map *fm) {
+  Str text = src.text;
+  if (!text.starts_with("---\n") && !text.starts_with("---\r\n"))
+    return text;
+
+  long pos = text.find_char('\n', 0) + 1;
+  while (pos < text.len) {
+    long end = text.find_char('\n', pos);
+    long next = end < 0 ? text.len : end + 1;
+    if (end < 0)
+      end = text.len;
+    Str line = text.slice(pos, end).trim();
+    Loc loc = {src, pos};
+
+    if (line.eqz("---"))
+      return text.from(next);
+
+    if (line.len > 0 && line.ptr[0] != '#') {
+      long colon = line.find_char(':', 0);
+      if (colon <= 0) {
+        loc.warn("expected 'key: value' in frontmatter");
+      } else {
+        Str key = line.slice(0, colon).trim();
+        Str val = line.from(colon + 1).trim();
+        if (val.len >= 2 && (val.ptr[0] == '"' || val.ptr[0] == '\'') &&
+            val.ptr[val.len - 1] == val.ptr[0])
+          val = val.slice(1, val.len - 1);
+
+        Str *v = alloc(sizeof(Str));
+        *v = val;
+        fm.put(key, v);
+      }
+    }
+    pos = next;
+  }
+
+  ((Loc){src, 0}).error("frontmatter is never closed with '---'");
+  return S("");
+}
+
+static void collect(const MD_CHAR *text, MD_SIZE size, void *buf) {
+  ((Buf *)buf).push((Str){(char *)text, size});
+}
+
+Str markdown(Str text) {
+  unsigned flags = MD_FLAG_COLLAPSEWHITESPACE | MD_FLAG_TABLES |
+                   MD_FLAG_TASKLISTS | MD_FLAG_STRIKETHROUGH |
+                   MD_FLAG_PERMISSIVEAUTOLINKS | MD_FLAG_PERMISSIVEWWWAUTOLINKS |
+                   MD_FLAG_LATEXMATHSPANS;
+  Buf out = {};
+  if (md_html(text.ptr, text.len, collect, &out, flags, 0) != 0)
+    error("markdown parser failed");
+  return out.str();
+}

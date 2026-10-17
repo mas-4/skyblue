@@ -1,0 +1,145 @@
+#include "skyblue.h"
+
+int nerrors;
+int nwarnings;
+Buf diag_log;
+
+// Every diagnostic printed since the last reset, so that a template
+// rendered for fifty posts reports a problem once, not fifty times.
+static Map seen;
+
+void reset_diags(void) {
+  nerrors = 0;
+  nwarnings = 0;
+  diag_log = (Buf){};
+  seen = (Map){};
+}
+
+Source *new_source(Str path, Str text) {
+  Source *src = alloc(sizeof(Source));
+  src.path = path;
+  src.text = text;
+  return src;
+}
+
+static bool use_color(void) {
+  static int color = -1;
+  if (color < 0)
+    color = isatty(2) && !getenv("NO_COLOR");
+  return color;
+}
+
+// Print "path:line:col: level: message", the source line and a caret.
+static void emit(Loc *loc, bool is_error, char *fmt, va_list ap) {
+  Buf msg = {};
+  msg.vfmt(fmt, ap);
+
+  Buf head = {};
+  Str excerpt = {};
+  long col = 0;
+  long line_no = 0;
+
+  if (loc && loc.src) {
+    Str text = loc.src.text;
+    long start = 0;
+    line_no = 1;
+    for (long i = 0; i < loc.off && i < text.len; i++) {
+      if (text.ptr[i] == '\n') {
+        line_no++;
+        start = i + 1;
+      }
+    }
+    long end = text.find_char('\n', start);
+    if (end < 0)
+      end = text.len;
+    excerpt = text.slice(start, end);
+    col = loc.off - start;
+    head.fmt("%.*s:%ld:%ld: ", SF(loc.src.path), line_no, col + 1);
+  } else {
+    head.pushz("skyblue: ");
+  }
+
+  Buf plain = {};
+  plain.push(head.str());
+  plain.pushz(is_error ? "error: " : "warning: ");
+  plain.push(msg.str());
+  plain.pushc('\n');
+  if (!excerpt.is_null()) {
+    plain.fmt("%5ld | %.*s\n      | ", line_no, SF(excerpt));
+    for (long i = 0; i < col; i++)
+      plain.pushc(excerpt.ptr[i] == '\t' ? '\t' : ' ');
+    plain.pushz("^\n");
+  }
+
+  Str text = plain.str();
+  if (seen.get(text))
+    return;
+  seen.put(text, (void *)1);
+
+  if (is_error)
+    nerrors++;
+  else
+    nwarnings++;
+  diag_log.push(text);
+
+  if (!use_color()) {
+    fprintf(stderr, "%.*s", SF(text));
+    return;
+  }
+
+  char *level = is_error ? "\033[1;31merror:\033[0m " : "\033[1;35mwarning:\033[0m ";
+  fprintf(stderr, "\033[1m%.*s\033[0m%s\033[1m%.*s\033[0m\n", SF(head.str()), level, SF(msg.str()));
+  if (!excerpt.is_null()) {
+    fprintf(stderr, "%5ld | %.*s\n      | ", line_no, SF(excerpt));
+    for (long i = 0; i < col; i++)
+      fputc(excerpt.ptr[i] == '\t' ? '\t' : ' ', stderr);
+    fprintf(stderr, "\033[1;32m^\033[0m\n");
+  }
+}
+
+void Loc.error(char *fmt, ...) {
+  va_list ap;
+  va_start(ap, fmt);
+  emit(ego, true, fmt, ap);
+  va_end(ap);
+}
+
+void Loc.warn(char *fmt, ...) {
+  va_list ap;
+  va_start(ap, fmt);
+  emit(ego, false, fmt, ap);
+  va_end(ap);
+}
+
+void error(char *fmt, ...) {
+  va_list ap;
+  va_start(ap, fmt);
+  emit(NULL, true, fmt, ap);
+  va_end(ap);
+}
+
+void warn(char *fmt, ...) {
+  va_list ap;
+  va_start(ap, fmt);
+  emit(NULL, false, fmt, ap);
+  va_end(ap);
+}
+
+void info(char *fmt, ...) {
+  va_list ap;
+  va_start(ap, fmt);
+  vfprintf(stderr, fmt, ap);
+  va_end(ap);
+  fputc('\n', stderr);
+}
+
+void debug(char *fmt, ...) {
+  if (!config.verbose)
+    return;
+  va_list ap;
+  va_start(ap, fmt);
+  fprintf(stderr, "debug: ");
+  vfprintf(stderr, fmt, ap);
+  va_end(ap);
+  fputc('\n', stderr);
+}

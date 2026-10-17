@@ -1,0 +1,458 @@
+#include "skyblue.h"
+
+#include <dirent.h>
+
+//
+// Arena
+//
+
+struct Chunk {
+  Chunk *next;
+  long cap;
+  long used;
+  char data[];
+};
+
+Arena arena;
+
+void *Arena.alloc(long size) {
+  size = (size + 15) & ~15;
+  Chunk *c = ego.chunks;
+  if (!c || c.used + size > c.cap) {
+    long cap = size > (1 << 20) ? size : (1 << 20);
+    c = calloc(1, sizeof(Chunk) + cap);
+    if (!c) {
+      fprintf(stderr, "skyblue: out of memory\n");
+      exit(1);
+    }
+    c.cap = cap;
+    c.next = ego.chunks;
+    ego.chunks = c;
+  }
+  void *p = c.data + c.used;
+  c.used += size;
+  return p;
+}
+
+void Arena.reset(void) {
+  while (ego.chunks) {
+    Chunk *next = ego.chunks.next;
+    free(ego.chunks);
+    ego.chunks = next;
+  }
+}
+
+void *alloc(long size) {
+  return arena.alloc(size);
+}
+
+//
+// Str
+//
+
+Str str(char *s) {
+  return (Str){s, strlen(s)};
+}
+
+Str strf(char *fmt, ...) {
+  Buf b = {};
+  va_list ap;
+  va_start(ap, fmt);
+  b.vfmt(fmt, ap);
+  va_end(ap);
+  return b.str();
+}
+
+bool Str.eq(Str s) {
+  return ego.len == s.len && !memcmp(ego.ptr, s.ptr, s.len);
+}
+
+bool Str.eqz(char *s) {
+  return ego.eq(str(s));
+}
+
+int Str.cmp(Str s) {
+  long n = ego.len < s.len ? ego.len : s.len;
+  int c = memcmp(ego.ptr, s.ptr, n);
+  if (c)
+    return c;
+  return (ego.len > s.len) - (ego.len < s.len);
+}
+
+bool Str.starts_with(char *prefix) {
+  long n = strlen(prefix);
+  return ego.len >= n && !memcmp(ego.ptr, prefix, n);
+}
+
+bool Str.ends_with(char *suffix) {
+  long n = strlen(suffix);
+  return ego.len >= n && !memcmp(ego.ptr + ego.len - n, suffix, n);
+}
+
+long Str.find(char *needle, long from) {
+  long n = strlen(needle);
+  for (long i = from; i + n <= ego.len; i++)
+    if (!memcmp(ego.ptr + i, needle, n))
+      return i;
+  return -1;
+}
+
+long Str.find_char(char c, long from) {
+  for (long i = from; i < ego.len; i++)
+    if (ego.ptr[i] == c)
+      return i;
+  return -1;
+}
+
+long Str.rfind_char(char c) {
+  for (long i = ego.len - 1; i >= 0; i--)
+    if (ego.ptr[i] == c)
+      return i;
+  return -1;
+}
+
+Str Str.slice(long from, long to) {
+  if (to > ego.len)
+    to = ego.len;
+  if (from < 0)
+    from = 0;
+  if (from > to)
+    from = to;
+  return (Str){ego.ptr + from, to - from};
+}
+
+Str Str.from(long i) {
+  return ego.slice(i, ego.len);
+}
+
+static bool is_space(char c) {
+  return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f' || c == '\v';
+}
+
+Str Str.trim() {
+  Str s = *ego;
+  while (s.len && is_space(s.ptr[0])) {
+    s.ptr++;
+    s.len--;
+  }
+  while (s.len && is_space(s.ptr[s.len - 1]))
+    s.len--;
+  return s;
+}
+
+bool Str.is_blank() {
+  return ego.trim().len == 0;
+}
+
+bool Str.is_null() {
+  return ego.ptr == NULL;
+}
+
+char *Str.cstr() {
+  char *p = alloc(ego.len + 1);
+  memcpy(p, ego.ptr, ego.len);
+  return p;
+}
+
+//
+// Buf
+//
+
+static void grow(Buf *b, long extra) {
+  if (b.len + extra <= b.cap)
+    return;
+  long cap = b.cap ? b.cap * 2 : 256;
+  while (cap < b.len + extra)
+    cap *= 2;
+  char *p = alloc(cap);
+  if (b.len)
+    memcpy(p, b.ptr, b.len);
+  b.ptr = p;
+  b.cap = cap;
+}
+
+void Buf.push(Str s) {
+  grow(ego, s.len);
+  memcpy(ego.ptr + ego.len, s.ptr, s.len);
+  ego.len += s.len;
+}
+
+void Buf.pushz(char *s) {
+  ego.push(str(s));
+}
+
+void Buf.pushc(int c) {
+  grow(ego, 1);
+  ego.ptr[ego.len++] = c;
+}
+
+void Buf.vfmt(char *fmt, va_list ap) {
+  va_list ap2;
+  va_copy(ap2, ap);
+  int n = vsnprintf(NULL, 0, fmt, ap2);
+  va_end(ap2);
+  grow(ego, n + 1);
+  vsnprintf(ego.ptr + ego.len, n + 1, fmt, ap);
+  ego.len += n;
+}
+
+void Buf.fmt(char *fmt, ...) {
+  va_list ap;
+  va_start(ap, fmt);
+  ego.vfmt(fmt, ap);
+  va_end(ap);
+}
+
+void Buf.html(Str s) {
+  for (long i = 0; i < s.len; i++) {
+    switch (s.ptr[i]) {
+    case '&': ego.pushz("&amp;"); break;
+    case '<': ego.pushz("&lt;"); break;
+    case '>': ego.pushz("&gt;"); break;
+    case '"': ego.pushz("&quot;"); break;
+    case '\'': ego.pushz("&#39;"); break;
+    default: ego.pushc(s.ptr[i]);
+    }
+  }
+}
+
+Str Buf.str() {
+  return (Str){ego.ptr ? ego.ptr : "", ego.len};
+}
+
+//
+// Map: open addressing with linear probing
+//
+
+static uint64_t hash(Str s) {
+  uint64_t h = 0xcbf29ce484222325;
+  for (long i = 0; i < s.len; i++) {
+    h ^= (unsigned char)s.ptr[i];
+    h *= 0x100000001b3;
+  }
+  return h;
+}
+
+static MapEntry *find_slot(MapEntry *slots, long cap, Str key) {
+  for (uint64_t i = hash(key);; i++) {
+    MapEntry *e = &slots[i & (cap - 1)];
+    if (e.key.is_null() || e.key.eq(key))
+      return e;
+  }
+}
+
+void *Map.get(Str key) {
+  if (!ego.cap)
+    return NULL;
+  MapEntry *e = find_slot(ego.slots, ego.cap, key);
+  return e.key.is_null() ? NULL : e.val;
+}
+
+void Map.put(Str key, void *val) {
+  if ((ego.len + 1) * 10 > ego.cap * 7) {
+    long cap = ego.cap ? ego.cap * 2 : 16;
+    MapEntry *slots = alloc(sizeof(MapEntry) * cap);
+    for (long i = 0; i < ego.cap; i++)
+      if (!ego.slots[i].key.is_null())
+        *find_slot(slots, cap, ego.slots[i].key) = ego.slots[i];
+    ego.slots = slots;
+    ego.cap = cap;
+  }
+
+  MapEntry *e = find_slot(ego.slots, ego.cap, key);
+  if (e.key.is_null()) {
+    e.key = key;
+    ego.len++;
+  }
+  e.val = val;
+}
+
+//
+// Paths
+//
+
+Str path_join(Str a, Str b) {
+  if (a.len == 0 || a.eqz("."))
+    return b;
+  if (a.ends_with("/"))
+    return strf("%.*s%.*s", SF(a), SF(b));
+  return strf("%.*s/%.*s", SF(a), SF(b));
+}
+
+// The directory part of a path: "a/b/c.html" -> "a/b", "c.html" -> ".".
+Str path_dir(Str path) {
+  long i = path.rfind_char('/');
+  if (i < 0)
+    return S(".");
+  if (i == 0)
+    return S("/");
+  return path.slice(0, i);
+}
+
+// Lexically normalize a path: drop "." and empty components, and
+// resolve ".." where possible. "./a//b/../c" -> "a/c".
+Str path_clean(Str path) {
+  bool abs = path.starts_with("/");
+  Str parts[256];
+  int n = 0;
+
+  long i = 0;
+  while (i <= path.len) {
+    long j = path.find_char('/', i);
+    if (j < 0)
+      j = path.len;
+    Str part = path.slice(i, j);
+    i = j + 1;
+
+    if (part.len == 0 || part.eqz("."))
+      continue;
+    if (part.eqz("..") && n > 0 && !parts[n - 1].eqz("..")) {
+      n--;
+      continue;
+    }
+    if (part.eqz("..") && abs)
+      continue;
+    if (n == 256) {
+      error("path has too many components: %.*s", SF(path));
+      return path;
+    }
+    parts[n++] = part;
+  }
+
+  Buf b = {};
+  if (abs)
+    b.pushc('/');
+  for (int k = 0; k < n; k++) {
+    if (k)
+      b.pushc('/');
+    b.push(parts[k]);
+  }
+  if (b.len == 0)
+    return S(".");
+  return b.str();
+}
+
+Str path_rel(Str root, Str path) {
+  if (root.eqz("."))
+    return path;
+  if (path.len > root.len && path.slice(0, root.len).eq(root) && path.ptr[root.len] == '/')
+    return path.from(root.len + 1);
+  return path;
+}
+
+static bool stat_mode(Str path, mode_t *mode) {
+  struct stat st;
+  if (stat(path.cstr(), &st))
+    return false;
+  *mode = st.st_mode;
+  return true;
+}
+
+bool is_dir(Str path) {
+  mode_t m;
+  return stat_mode(path, &m) && S_ISDIR(m);
+}
+
+bool is_file(Str path) {
+  mode_t m;
+  return stat_mode(path, &m) && S_ISREG(m);
+}
+
+static int cmp_str(const void *a, const void *b) {
+  return ((Str *)a).cmp(*(Str *)b);
+}
+
+Str *list_dir(Str dir, long *n) {
+  *n = 0;
+  DIR *d = opendir(dir.cstr());
+  if (!d)
+    return NULL;
+
+  long cap = 16;
+  Str *names = alloc(sizeof(Str) * cap);
+  struct dirent *e;
+  while ((e = readdir(d))) {
+    if (!strcmp(e.d_name, ".") || !strcmp(e.d_name, ".."))
+      continue;
+    if (*n == cap) {
+      Str *p = alloc(sizeof(Str) * cap * 2);
+      memcpy(p, names, sizeof(Str) * cap);
+      names = p;
+      cap *= 2;
+    }
+    Str name = str(e.d_name);
+    names[(*n)++] = (Str){name.cstr(), name.len};
+  }
+  closedir(d);
+  qsort(names, *n, sizeof(Str), cmp_str);
+  return names;
+}
+
+bool read_file(Str path, Str *out) {
+  FILE *f = fopen(path.cstr(), "rb");
+  if (!f)
+    return false;
+
+  Buf b = {};
+  char tmp[65536];
+  long n;
+  while ((n = fread(tmp, 1, sizeof(tmp), f)) > 0)
+    b.push((Str){tmp, n});
+  bool ok = !ferror(f);
+  int err = errno;
+  fclose(f);
+  errno = err;
+  *out = b.str();
+  return ok;
+}
+
+bool write_file(Str path, Str data) {
+  FILE *f = fopen(path.cstr(), "wb");
+  if (!f)
+    return false;
+  bool ok = fwrite(data.ptr, 1, data.len, f) == data.len;
+  int err = errno;
+  if (fclose(f))
+    ok = false;
+  else
+    errno = err;
+  return ok;
+}
+
+bool copy_file(Str from, Str to) {
+  FILE *in = fopen(from.cstr(), "rb");
+  if (!in)
+    return false;
+  FILE *out = fopen(to.cstr(), "wb");
+  if (!out) {
+    int err = errno;
+    fclose(in);
+    errno = err;
+    return false;
+  }
+
+  char tmp[65536];
+  long n;
+  bool ok = true;
+  while (ok && (n = fread(tmp, 1, sizeof(tmp), in)) > 0)
+    ok = fwrite(tmp, 1, n, out) == n;
+  if (ferror(in))
+    ok = false;
+  int err = errno;
+  fclose(in);
+  if (fclose(out))
+    ok = false;
+  else
+    errno = err;
+  return ok;
+}
+
+// mkdir -p
+bool make_dirs(Str dir) {
+  dir = path_clean(dir);
+  if (dir.eqz(".") || dir.eqz("/") || is_dir(dir))
+    return true;
+  if (!make_dirs(path_dir(dir)))
+    return false;
+  return mkdir(dir.cstr(), 0755) == 0 || errno == EEXIST;
+}

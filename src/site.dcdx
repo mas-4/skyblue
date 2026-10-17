@@ -1,0 +1,214 @@
+#include "skyblue.h"
+
+// What goes where:
+//
+//   meta              site variables, not copied
+//   _imports/         includes and templates, not copied
+//   *.md              only published through <sky-markdown>
+//   *.html            pages: rendered
+//   .*                hidden files are skipped, except .htaccess
+//                     and .well-known
+//   everything else   copied as is
+
+static char *htaccess =
+  "RewriteEngine On\n"
+  "RewriteCond %{REQUEST_FILENAME} !-d\n"
+  "RewriteCond %{REQUEST_FILENAME} !-f\n"
+  "RewriteRule ^([^\\.]+)$ $1.html [NC,L]\n";
+
+Site *build_site(char *input, char *output) {
+  Site *site = alloc(sizeof(Site));
+  site.root = path_clean(str(input));
+  site.outdir = output ? path_clean(str(output)) : (Str){};
+  site.build();
+  return site;
+}
+
+void Site.build() {
+  ego.load_meta();
+  ego.walk(ego.root);
+  debug("%d pages, %d files", ego.npages, ego.nfiles);
+}
+
+// key=value lines. Blank lines and lines starting with # are ignored.
+void Site.load_meta() {
+  Str path = path_join(ego.root, S("meta"));
+  if (!is_file(path)) {
+    debug("no meta file at %.*s", SF(path));
+    return;
+  }
+  Source *src = ego.read(path, (Loc){});
+  if (!src)
+    return;
+
+  Str text = src.text;
+  long pos = 0;
+  while (pos < text.len) {
+    long end = text.find_char('\n', pos);
+    if (end < 0)
+      end = text.len;
+    Str line = text.slice(pos, end).trim();
+    Loc loc = {src, pos};
+    pos = end + 1;
+
+    if (line.len == 0 || line.ptr[0] == '#')
+      continue;
+    long eq = line.find_char('=', 0);
+    if (eq <= 0) {
+      loc.warn("expected 'key=value'");
+      continue;
+    }
+    Str *val = alloc(sizeof(Str));
+    *val = line.from(eq + 1).trim();
+    ego.meta.put(line.slice(0, eq).trim(), val);
+  }
+}
+
+static bool is_hidden(Str name) {
+  return name.starts_with(".") && !name.eqz(".htaccess") && !name.eqz(".well-known");
+}
+
+void Site.walk(Str dir) {
+  long n;
+  Str *names = list_dir(dir, &n);
+  if (!names) {
+    error("can't read directory '%.*s': %s", SF(dir), strerror(errno));
+    return;
+  }
+
+  for (long i = 0; i < n; i++) {
+    Str name = names[i];
+    Str path = path_join(dir, name);
+    Str rel = path_rel(ego.root, path);
+
+    if (is_hidden(name) || path.eq(ego.outdir))
+      continue;
+
+    if (is_dir(path)) {
+      if (!name.eqz("_imports"))
+        ego.walk(path);
+      continue;
+    }
+
+    if (rel.eqz("meta") || name.ends_with(".md"))
+      continue;
+
+    if (name.ends_with(".html")) {
+      Doc *doc = ego.load(path, (Loc){});
+      if (!doc)
+        continue;
+      Str html = render_page(ego, doc);
+      Output *o = ego.add(rel, path, (Loc){doc.src, 0});
+      if (o) {
+        o.content = html;
+        ego.npages++;
+        debug("rendered %.*s", SF(rel));
+      }
+      continue;
+    }
+
+    Output *o = ego.add(rel, path, (Loc){});
+    if (o) {
+      o.copy_from = path;
+      ego.nfiles++;
+    }
+  }
+}
+
+Source *Site.read(Str path, Loc loc) {
+  Str text;
+  if (!read_file(path, &text)) {
+    loc.error("can't read '%.*s': %s", SF(path), strerror(errno));
+    return NULL;
+  }
+  return new_source(path, text);
+}
+
+// Parse an HTML file, once.
+Doc *Site.load(Str path, Loc loc) {
+  Doc *doc = ego.docs.get(path);
+  if (doc)
+    return doc;
+  Source *src = ego.read(path, loc);
+  if (!src)
+    return NULL;
+  doc = parse(src);
+  ego.docs.put(path, doc);
+  return doc;
+}
+
+// Find a file named in an attribute. Paths are relative to the file
+// that names them; a leading / means the site root. Includes and
+// templates are also looked for in _imports/. Returns an absent Str
+// after reporting an error.
+Str Site.resolve(Doc *from, Str path, Loc loc, bool imports) {
+  if (path.is_blank())
+    return (Str){};
+
+  Str base = path_dir(from.src.path);
+  if (path.starts_with("/")) {
+    base = ego.root;
+    path = path.from(1);
+  }
+
+  Str found = path_clean(path_join(base, path));
+  if (is_file(found) || is_dir(found))
+    return found;
+
+  if (imports) {
+    Str alt = path_clean(path_join(path_join(ego.root, S("_imports")), path));
+    if (is_file(alt))
+      return alt;
+    loc.error("can't find '%.*s' (looked for %.*s and %.*s)", SF(path), SF(found), SF(alt));
+  } else {
+    loc.error("can't find '%.*s' (looked for %.*s)", SF(path), SF(found));
+  }
+  return (Str){};
+}
+
+Output *Site.find(Str path) {
+  return ego.outputs.get(path);
+}
+
+Output *Site.add(Str path, Str origin, Loc loc) {
+  Output *prev = ego.find(path);
+  if (prev) {
+    loc.error("both %.*s and %.*s would be written to %.*s",
+              SF(prev.origin), SF(origin), SF(path));
+    return NULL;
+  }
+
+  Output *o = alloc(sizeof(Output));
+  o.path = path;
+  o.origin = origin;
+  ego.outputs.put(path, o);
+  if (ego.last)
+    ego.last = ego.last.next = o;
+  else
+    ego.first = ego.last = o;
+  return o;
+}
+
+bool Site.write(Str outdir) {
+  outdir = path_clean(outdir);
+  int errors = nerrors;
+
+  for (Output *o = ego.first; o; o = o.next) {
+    Str dst = path_join(outdir, o.path);
+    if (!make_dirs(path_dir(dst))) {
+      error("can't create directory '%.*s': %s", SF(path_dir(dst)), strerror(errno));
+      continue;
+    }
+    bool ok = o.copy_from.is_null() ? write_file(dst, o.content) : copy_file(o.copy_from, dst);
+    if (!ok)
+      error("can't write '%.*s': %s", SF(dst), strerror(errno));
+  }
+
+  if (!ego.find(S(".htaccess"))) {
+    Str dst = path_join(outdir, S(".htaccess"));
+    if (!make_dirs(outdir) || !write_file(dst, str(htaccess)))
+      error("can't write '%.*s': %s", SF(dst), strerror(errno));
+  }
+
+  return nerrors == errors;
+}

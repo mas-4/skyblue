@@ -1,0 +1,272 @@
+#include "skyblue.h"
+
+// The lexer splits a file into literal HTML text, `${ns.key}` variables
+// and skyblue tags. Everything else, including ordinary HTML tags, is
+// text. Nothing inside an HTML comment is interpreted.
+
+static bool is_name_char(char c) {
+  return ('a' <= c && c <= 'z') || ('A' <= c && c <= 'Z') ||
+         ('0' <= c && c <= '9') || c == '-' || c == '_';
+}
+
+static bool is_space(char c) {
+  return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f';
+}
+
+typedef struct Lexer Lexer;
+struct Lexer {
+  Source *src;
+  Str text;
+  long pos;
+  long text_start; // start of the pending literal text
+  Token head;
+  Token *cur;
+
+  Loc loc(long off);
+  Token *add(TokenKind kind, long off);
+  void flush(long end);
+  long name(long p);
+  long space(long p);
+  bool var(void);
+  void tag(void);
+};
+
+Loc Lexer.loc(long off) {
+  return (Loc){ego.src, off};
+}
+
+Token *Lexer.add(TokenKind kind, long off) {
+  Token *tok = alloc(sizeof(Token));
+  tok.kind = kind;
+  tok.loc = ego.loc(off);
+  ego.cur = ego.cur.next = tok;
+  return tok;
+}
+
+// Emit the literal text before `end`, if any.
+void Lexer.flush(long end) {
+  if (end > ego.text_start) {
+    Token *tok = ego.add(TK_TEXT, ego.text_start);
+    tok.text = ego.text.slice(ego.text_start, end);
+  }
+}
+
+// The end of a run of name characters starting at `p`.
+long Lexer.name(long p) {
+  while (p < ego.text.len && is_name_char(ego.text.ptr[p]))
+    p++;
+  return p;
+}
+
+long Lexer.space(long p) {
+  while (p < ego.text.len && is_space(ego.text.ptr[p]))
+    p++;
+  return p;
+}
+
+// ${meta.key} or ${frontmatter.key}. Anything else that starts with
+// "${", such as a JavaScript template literal, is left as text.
+bool Lexer.var(void) {
+  long start = ego.pos;
+  long p = start + 2;
+  long ns_end = ego.name(p);
+  if (ns_end == p || ns_end >= ego.text.len || ego.text.ptr[ns_end] != '.')
+    return false;
+  long key_start = ns_end + 1;
+  long key_end = ego.name(key_start);
+  if (key_end == key_start || key_end >= ego.text.len || ego.text.ptr[key_end] != '}')
+    return false;
+
+  Str ns = ego.text.slice(p, ns_end);
+  if (!ns.eqz("meta") && !ns.eqz("frontmatter"))
+    return false;
+
+  ego.flush(start);
+  Token *tok = ego.add(TK_VAR, start);
+  tok.text = ns;
+  tok.key = ego.text.slice(key_start, key_end);
+  ego.pos = key_end + 1;
+  ego.text_start = ego.pos;
+  return true;
+}
+
+// <sky-name attr="value" ...> or <sky-name ... /> or </sky-name>
+void Lexer.tag(void) {
+  Str text = ego.text;
+  long start = ego.pos;
+  bool is_end = text.ptr[start + 1] == '/';
+  long p = start + 1 + is_end;
+
+  if (text.from(p).starts_with("bluesky-")) {
+    p += 8;
+    if (!ego.src.warned_legacy) {
+      ego.src.warned_legacy = true;
+      ego.loc(start).warn("the <bluesky-...> tag prefix is deprecated; use <sky-...>");
+    }
+  } else {
+    p += 4; // "sky-"
+  }
+
+  ego.flush(start);
+  Token *tok = ego.add(is_end ? TK_END_TAG : TK_TAG, start);
+
+  long name_end = ego.name(p);
+  tok.text = text.slice(p, name_end);
+  if (tok.text.len == 0)
+    ego.loc(p).error("expected a tag name");
+  p = name_end;
+
+  Attr head = {};
+  Attr *cur = &head;
+  bool broken = tok.text.len == 0;
+
+  for (;;) {
+    p = ego.space(p);
+    if (p >= text.len) {
+      ego.loc(start).error("unterminated <sky-%.*s> tag", SF(tok.text));
+      broken = true;
+      break;
+    }
+    if (text.from(p).starts_with("/>") && !is_end) {
+      tok.self_closing = true;
+      p += 2;
+      break;
+    }
+    if (text.ptr[p] == '>') {
+      p++;
+      break;
+    }
+    if (is_end) {
+      ego.loc(p).error("expected '>'");
+      long gt = text.find_char('>', p);
+      p = gt < 0 ? text.len : gt + 1;
+      broken = true;
+      break;
+    }
+
+    // An attribute: name="value", name='value' or name=value
+    long attr_start = p;
+    long attr_end = ego.name(p);
+    if (attr_end == p) {
+      ego.loc(p).error("unexpected '%c' in <sky-%.*s> tag", text.ptr[p], SF(tok.text));
+      long gt = text.find_char('>', p);
+      p = gt < 0 ? text.len : gt + 1;
+      broken = true;
+      break;
+    }
+
+    Attr *attr = alloc(sizeof(Attr));
+    attr.loc = ego.loc(attr_start);
+    attr.name = text.slice(attr_start, attr_end);
+
+    p = ego.space(attr_end);
+    if (p >= text.len || text.ptr[p] != '=') {
+      attr.loc.error("attribute '%.*s' needs a value, like %.*s=\"...\"",
+                     SF(attr.name), SF(attr.name));
+      continue;
+    }
+    p = ego.space(p + 1);
+
+    if (p < text.len && (text.ptr[p] == '"' || text.ptr[p] == '\'')) {
+      long close = text.find_char(text.ptr[p], p + 1);
+      if (close < 0) {
+        ego.loc(p).error("unterminated attribute value");
+        p = text.len;
+        broken = true;
+        break;
+      }
+      attr.value = text.slice(p + 1, close);
+      p = close + 1;
+    } else {
+      long v = p;
+      while (p < text.len && !is_space(text.ptr[p]) && text.ptr[p] != '>' &&
+             !text.from(p).starts_with("/>"))
+        p++;
+      attr.value = text.slice(v, p);
+    }
+
+    for (Attr *a = head.next; a; a = a.next)
+      if (a.name.eq(attr.name))
+        attr.loc.warn("duplicate attribute '%.*s'; the last one wins", SF(attr.name));
+    cur = cur.next = attr;
+  }
+
+  // Later attributes win, so put them first.
+  Attr *rev = NULL;
+  for (Attr *a = head.next; a;) {
+    Attr *next = a.next;
+    a.next = rev;
+    rev = a;
+    a = next;
+  }
+  tok.attrs = rev;
+
+  // A malformed tag has been reported. Treat it as text so that it
+  // doesn't cause more errors.
+  if (broken) {
+    tok.kind = TK_TEXT;
+    tok.text = text.slice(start, p);
+    tok.attrs = NULL;
+  }
+
+  ego.pos = p;
+  ego.text_start = p;
+}
+
+Token *lex(Source *src) {
+  Lexer lx = {};
+  lx.src = src;
+  lx.text = src.text;
+  lx.cur = &lx.head;
+
+  Str text = lx.text;
+  while (lx.pos < text.len) {
+    Str rest = text.from(lx.pos);
+
+    if (rest.starts_with("<!--")) {
+      long end = text.find("-->", lx.pos + 4);
+      lx.pos = end < 0 ? text.len : end + 3;
+      continue;
+    }
+
+    if (rest.starts_with("$${")) {
+      lx.flush(lx.pos);
+      Token *tok = lx.add(TK_TEXT, lx.pos);
+      tok.text = text.slice(lx.pos + 1, lx.pos + 3);
+      lx.pos += 3;
+      lx.text_start = lx.pos;
+      continue;
+    }
+
+    if (rest.starts_with("${") && lx.var())
+      continue;
+
+    if (rest.starts_with("<sky-") || rest.starts_with("</sky-") ||
+        rest.starts_with("<bluesky-") || rest.starts_with("</bluesky-")) {
+      lx.tag();
+      continue;
+    }
+
+    lx.pos++;
+  }
+
+  lx.flush(text.len);
+  lx.add(TK_EOF, text.len);
+  return lx.head.next;
+}
+
+Str Token.attr(char *name) {
+  for (Attr *a = ego.attrs; a; a = a.next) {
+    if (a.name.eqz(name)) {
+      a.used = true;
+      return a.value;
+    }
+  }
+  return (Str){};
+}
+
+void Token.check_attrs() {
+  for (Attr *a = ego.attrs; a; a = a.next)
+    if (!a.used)
+      a.loc.warn("unknown attribute '%.*s' on <sky-%.*s>", SF(a.name), SF(ego.text));
+}

@@ -1,0 +1,7 @@
+site/posts/c.md:1:1: warning: no 'title' in the frontmatter for the link text
+    1 | ---
+      | ^
+site/_imports/post.html:1:5: warning: 'site/posts/c.md' has no frontmatter key 'title'
+    1 | <h1>${frontmatter.title}</h1><time>${frontmatter.date}</time>
+      |     ^
+skyblue: 5 pages and 1 file -> out (2 warnings)

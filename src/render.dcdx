@@ -1,0 +1,317 @@
+#include "skyblue.h"
+
+// Rendering walks a document's nodes and writes HTML to `out`.
+//
+// A page with a <sky-template> renders each of its blocks first, then
+// renders the template with those blocks in its slots. Templates can
+// use templates too; a block can contain a <sky-slot>, which passes the
+// outer page's slot through. Includes are rendered in place, with the
+// same slots and frontmatter as the file that includes them.
+
+Str render_page(Site *site, Doc *doc) {
+  Buf out = {};
+  Render r = {};
+  r.site = site;
+  r.out = &out;
+  r.doc(doc);
+  return out.str();
+}
+
+bool Render.doc(Doc *doc) {
+  doc.active = true;
+
+  if (doc.templ.is_null()) {
+    ego.nodes(doc, doc.body);
+    doc.active = false;
+    return true;
+  }
+
+  Str path = ego.site.resolve(doc, doc.templ, doc.templ_loc, true);
+  Doc *templ = path.is_null() ? NULL : ego.site.load(path, doc.templ_loc);
+  if (!templ) {
+    doc.active = false;
+    return false;
+  }
+  if (templ.active) {
+    doc.templ_loc.error("template cycle: '%.*s' ends up using itself", SF(path));
+    doc.active = false;
+    return false;
+  }
+
+  // Render the blocks. Any slots we were given pass through them.
+  Map *slots = alloc(sizeof(Map));
+  Buf *out = ego.out;
+  for (Node *block = doc.body; block; block = block.next) {
+    Slot *slot = alloc(sizeof(Slot));
+    Buf *buf = alloc(sizeof(Buf));
+    ego.out = buf;
+    ego.nodes(doc, block.body);
+    slot.html = buf.str();
+    slot.loc = block.loc;
+    slots.put(block.name, slot);
+  }
+  ego.out = out;
+
+  Map *outer = ego.slots;
+  ego.slots = slots;
+  bool ok = ego.doc(templ);
+  ego.slots = outer;
+
+  for (Node *block = doc.body; ok && block; block = block.next) {
+    Slot *slot = slots.get(block.name);
+    if (!slot.used)
+      block.loc.warn("template '%.*s' has no <sky-slot name=\"%.*s\">",
+                     SF(path), SF(block.name));
+  }
+
+  doc.active = false;
+  return ok;
+}
+
+void Render.nodes(Doc *doc, Node *node) {
+  for (; node; node = node.next)
+    ego.node(doc, node);
+}
+
+void Render.node(Doc *doc, Node *node) {
+  switch (node.kind) {
+  case ND_TEXT:
+    ego.out.push(node.text);
+    return;
+  case ND_VAR:
+    ego.var(node);
+    return;
+  case ND_INCLUDE:
+    ego.include(doc, node);
+    return;
+  case ND_MD_INCLUDE:
+    ego.md_include(doc, node);
+    return;
+  case ND_SLOT:
+    ego.slot(node);
+    return;
+  case ND_LIST:
+    ego.list(doc, node);
+    return;
+  case ND_BLOCK:
+    // The parser reports blocks outside templated pages.
+    return;
+  }
+}
+
+void Render.var(Node *node) {
+  if (node.ns.eqz("meta")) {
+    Str *val = ego.site.meta.get(node.key);
+    if (val)
+      ego.out.push(*val);
+    else
+      node.loc.warn("the meta file has no key '%.*s'", SF(node.key));
+    return;
+  }
+
+  // frontmatter
+  if (!ego.fm) {
+    node.loc.warn("${frontmatter.%.*s} only has a value in a markdown post's template",
+                  SF(node.key));
+    return;
+  }
+  Str *val = ego.fm.get(node.key);
+  if (val)
+    ego.out.push(*val);
+  else
+    node.loc.warn("'%.*s' has no frontmatter key '%.*s'", SF(ego.fm_path), SF(node.key));
+}
+
+void Render.include(Doc *doc, Node *node) {
+  Str path = ego.site.resolve(doc, node.path, node.loc, true);
+  if (path.is_null())
+    return;
+  Doc *inc = ego.site.load(path, node.loc);
+  if (!inc)
+    return;
+  if (inc.active) {
+    node.loc.error("include cycle: '%.*s' ends up including itself", SF(path));
+    return;
+  }
+  if (!inc.templ.is_null()) {
+    node.loc.error("can't include '%.*s' because it uses <sky-template>", SF(path));
+    return;
+  }
+
+  inc.active = true;
+  ego.nodes(inc, inc.body);
+  inc.active = false;
+}
+
+void Render.md_include(Doc *doc, Node *node) {
+  Str path = ego.site.resolve(doc, node.path, node.loc, true);
+  if (path.is_null())
+    return;
+  Source *src = ego.site.read(path, node.loc);
+  if (!src)
+    return;
+  Map fm = {};
+  ego.out.push(markdown(split_frontmatter(src, &fm)));
+}
+
+void Render.slot(Node *node) {
+  if (!ego.slots) {
+    node.loc.warn("<sky-slot> only has a value in a template");
+    return;
+  }
+  Slot *slot = ego.slots.get(node.name);
+  if (slot) {
+    slot.used = true;
+    ego.out.push(slot.html);
+  }
+}
+
+//
+// <sky-markdown>: turn a directory of markdown files into pages, and
+// render a list of links to them.
+//
+
+typedef struct Post Post;
+struct Post {
+  Str name;     // file name, e.g. "hello.md"
+  Str path;     // source path
+  Str out;      // output path, e.g. "blog/hello.html"
+  Str url;      // e.g. "/blog/hello"
+  Str body;     // markdown, without frontmatter
+  Str sort_key;
+  Str title;
+  Map fm;
+};
+
+static int cmp_posts(const void *a, const void *b) {
+  Post *p = (Post *)a;
+  Post *q = (Post *)b;
+  int c = p.sort_key.cmp(q.sort_key);
+  return c ? c : p.name.cmp(q.name);
+}
+
+static Str strip_md(Str s) {
+  return s.slice(0, s.len - 3);
+}
+
+void Render.list(Doc *doc, Node *node) {
+  Site *site = ego.site;
+  Str dir = site.resolve(doc, node.path, node.loc, false);
+  if (dir.is_null())
+    return;
+  if (!is_dir(dir)) {
+    node.loc.error("'%.*s' is not a directory", SF(dir));
+    return;
+  }
+  if (!site.root.eqz(".") && path_rel(site.root, dir).eq(dir)) {
+    node.loc.error("'%.*s' is outside the site", SF(dir));
+    return;
+  }
+
+  Str templ_path = site.resolve(doc, node.templ, node.loc, true);
+  Doc *templ = templ_path.is_null() ? NULL : site.load(templ_path, node.loc);
+  if (!templ)
+    return;
+
+  long n;
+  Str *names = list_dir(dir, &n);
+  Post *posts = alloc(sizeof(Post) * (n + 1));
+  int nposts = 0;
+
+  for (long i = 0; i < n; i++) {
+    Str path = path_join(dir, names[i]);
+    if (!names[i].ends_with(".md") || !is_file(path))
+      continue;
+    Source *src = site.read(path, node.loc);
+    if (!src)
+      continue;
+
+    Post *p = &posts[nposts++];
+    p.name = names[i];
+    p.path = path;
+    p.body = split_frontmatter(src, &p.fm);
+    Str rel = strip_md(path_rel(site.root, path));
+    p.out = strf("%.*s.html", SF(rel));
+    p.url = strf("/%.*s", SF(rel));
+
+    Loc top = {src, 0};
+    if (node.sort.len == 0) {
+      p.sort_key = p.name;
+    } else {
+      Str *key = p.fm.get(node.sort);
+      if (key)
+        p.sort_key = *key;
+      else
+        top.warn("no '%.*s' in the frontmatter to sort by", SF(node.sort));
+    }
+
+    Str *title = p.fm.get(node.title);
+    if (title) {
+      p.title = *title;
+    } else {
+      top.warn("no '%.*s' in the frontmatter for the link text", SF(node.title));
+      p.title = strip_md(p.name);
+    }
+  }
+
+  qsort(posts, nposts, sizeof(Post), cmp_posts);
+  if (node.descending) {
+    for (int i = 0, j = nposts - 1; i < j; i++, j--) {
+      Post tmp = posts[i];
+      posts[i] = posts[j];
+      posts[j] = tmp;
+    }
+  }
+
+  // The pages. Two listings of the same directory with the same
+  // template (say, a blog page and the home page) share them.
+  for (int i = 0; i < nposts; i++) {
+    Post *p = &posts[i];
+    Output *prev = site.find(p.out);
+    if (prev && prev.origin.eq(p.path) && prev.templ.eq(templ_path))
+      continue;
+    if (templ.active) {
+      node.loc.error("template cycle: '%.*s' ends up listing itself", SF(templ_path));
+      return;
+    }
+
+    Map *slots = alloc(sizeof(Map));
+    Slot *slot = alloc(sizeof(Slot));
+    slot.html = markdown(p.body);
+    slot.loc = node.loc;
+    slots.put(node.name, slot);
+
+    Buf page = {};
+    Render r = {};
+    r.site = site;
+    r.out = &page;
+    r.fm = &p.fm;
+    r.fm_path = p.path;
+    r.slots = slots;
+    bool ok = r.doc(templ);
+
+    if (ok && !slot.used)
+      node.loc.warn("template '%.*s' has no <sky-slot name=\"%.*s\"> for the posts",
+                    SF(templ_path), SF(node.name));
+
+    Output *o = site.add(p.out, p.path, node.loc);
+    if (o) {
+      o.content = page.str();
+      o.templ = templ_path;
+      site.npages++;
+      debug("rendered %.*s -> %.*s", SF(p.path), SF(p.out));
+    }
+  }
+
+  // The list.
+  Buf *out = ego.out;
+  out.pushz("<ul>\n");
+  for (int i = 0; i < nposts; i++) {
+    out.pushz("<li><a href=\"");
+    out.html(posts[i].url);
+    out.pushz("\">");
+    out.html(posts[i].title);
+    out.pushz("</a></li>\n");
+  }
+  out.pushz("</ul>\n");
+}

@@ -1,0 +1,43 @@
+site/clash.html:2:1: error: unterminated <sky-include> tag
+    2 | <sky-include path="bad attr=1" 
+      | ^
+site/index.html:1:1: error: unknown tag <sky-frob>
+    1 | <sky-frob a="1" />
+      | ^
+site/index.html:2:1: error: <sky-include> needs a path attribute
+    2 | <sky-include />
+      | ^
+site/index.html:4:1: error: order must be "ascending" or "descending", not "sideways"
+    4 | <sky-markdown directory="posts" template="list.html" order="sideways" />
+      | ^
+site/index.html:5:1: error: </sky-block> doesn't close anything
+    5 | </sky-block>
+      | ^
+site/index.html:6:1: error: <sky-block> is never closed
+    6 | <sky-block name="x">never closed
+      | ^
+site/index.html:6:1: error: <sky-block> only works in a page that uses <sky-template>
+    6 | <sky-block name="x">never closed
+      | ^
+site/index.html:3:1: error: can't find 'missing.html' (looked for site/missing.html and site/_imports/missing.html)
+    3 | <sky-include path="missing.html" />
+      | ^
+site/list.html:1:1: warning: <sky-slot> only has a value in a template
+    1 | <sky-slot name="content" />
+      | ^
+site/loop.html:1:1: error: include cycle: 'site/loop.html' ends up including itself
+    1 | <sky-include path="loop.html" />
+      | ^
+site/posts/x.html:1:1: error: both site/posts/x.md and site/posts/x.html would be written to posts/x.html
+    1 | <p>clash</p>
+      | ^
+site/t2.html:1:1: error: template cycle: 'site/t1.html' ends up using itself
+    1 | <sky-template path="t1.html" />
+      | ^
+site/t2.html:2:21: warning: <sky-slot> only has a value in a template
+    2 | <sky-block name="a"><sky-slot name="a" /></sky-block>
+      |                     ^
+site/t1.html:1:1: error: template cycle: 'site/t2.html' ends up using itself
+    1 | <sky-template path="t2.html" />
+      | ^
+skyblue: 12 errors, 2 warnings; nothing was written

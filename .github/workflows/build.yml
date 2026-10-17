@@ -1,0 +1,33 @@
+name: Build
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    # skyblue is written in c', so build the compiler first. It
+    # bootstraps itself from a C copy, so only a C compiler is needed.
+    - uses: actions/checkout@v4
+      with:
+        repository: ${{ github.repository_owner }}/cprime
+        path: cprime
+
+    - name: Build cprime
+      run: make -C cprime
+
+    - name: Build skyblue
+      run: make CPRIME=$PWD/cprime/cprime
+
+    - name: Test
+      run: make test CPRIME=$PWD/cprime/cprime
+
+    - name: Build the example site
+      run: ./skyblue -i site-src -o build

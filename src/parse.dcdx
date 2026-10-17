@@ -1,0 +1,200 @@
+#include "skyblue.h"
+
+// The parser turns tokens into a document:
+//
+//   doc      = (text | var | include | md-include | slot | markdown
+//               | template | block)*
+//   block    = <sky-block name> (text | var | include | ...)* </sky-block>
+//            | <sky-block name />
+//
+// A document with a <sky-template> is a templated page: its blocks fill
+// the template's slots and nothing else at the top level is rendered.
+
+typedef struct Parser Parser;
+struct Parser {
+  Doc *doc;
+  Token *tok;
+
+  Node *nodes(Token *block);
+  Node *tag(Token *tok, Token *block);
+  Node *new_node(NodeKind kind, Token *tok);
+  Str required(Token *tok, char *name, char *alias);
+};
+
+Node *Parser.new_node(NodeKind kind, Token *tok) {
+  Node *node = alloc(sizeof(Node));
+  node.kind = kind;
+  node.loc = tok.loc;
+  return node;
+}
+
+// An attribute that must be present. `alias` is an older name for it.
+Str Parser.required(Token *tok, char *name, char *alias) {
+  Str val = tok.attr(name);
+  if (val.is_null() && alias)
+    val = tok.attr(alias);
+  if (val.is_null()) {
+    tok.loc.error("<sky-%.*s> needs a %s attribute", SF(tok.text), name);
+    return S("");
+  }
+  if (val.is_blank())
+    tok.loc.error("<sky-%.*s> has an empty %s attribute", SF(tok.text), name);
+  return val;
+}
+
+static Str optional(Token *tok, char *name, char *fallback) {
+  Str val = tok.attr(name);
+  return val.is_null() ? str(fallback) : val;
+}
+
+// Parse until EOF, or until </sky-block> if `block` is the open tag.
+Node *Parser.nodes(Token *block) {
+  Node head = {};
+  Node *cur = &head;
+
+  for (;;) {
+    Token *tok = ego.tok;
+
+    if (tok.kind == TK_EOF) {
+      if (block)
+        block.loc.error("<sky-block> is never closed");
+      return head.next;
+    }
+
+    ego.tok = tok.next;
+
+    if (tok.kind == TK_TEXT) {
+      Node *node = ego.new_node(ND_TEXT, tok);
+      node.text = tok.text;
+      cur = cur.next = node;
+      continue;
+    }
+
+    if (tok.kind == TK_VAR) {
+      Node *node = ego.new_node(ND_VAR, tok);
+      node.ns = tok.text;
+      node.key = tok.key;
+      cur = cur.next = node;
+      continue;
+    }
+
+    if (tok.kind == TK_END_TAG) {
+      if (tok.text.eqz("block") && block)
+        return head.next;
+      tok.loc.error("</sky-%.*s> doesn't close anything", SF(tok.text));
+      continue;
+    }
+
+    Node *node = ego.tag(tok, block);
+    tok.check_attrs();
+    if (node)
+      cur = cur.next = node;
+  }
+}
+
+// A <sky-...> open tag. `block` is the enclosing block, if any.
+Node *Parser.tag(Token *tok, Token *block) {
+  Str name = tok.text;
+
+  if (name.eqz("include")) {
+    Node *node = ego.new_node(ND_INCLUDE, tok);
+    node.path = ego.required(tok, "path", "name");
+    return node;
+  }
+
+  if (name.eqz("md-include")) {
+    Node *node = ego.new_node(ND_MD_INCLUDE, tok);
+    node.path = ego.required(tok, "path", "name");
+    return node;
+  }
+
+  if (name.eqz("slot")) {
+    Node *node = ego.new_node(ND_SLOT, tok);
+    node.name = ego.required(tok, "name", NULL);
+    return node;
+  }
+
+  if (name.eqz("markdown")) {
+    Node *node = ego.new_node(ND_LIST, tok);
+    node.path = ego.required(tok, "directory", NULL);
+    node.templ = ego.required(tok, "template", NULL);
+    node.name = optional(tok, "slot", "content");
+    node.sort = optional(tok, "sort", "");
+    node.title = optional(tok, "title", "title");
+
+    Str order = optional(tok, "order", "ascending");
+    if (order.eqz("descending") || order.eqz("desc"))
+      node.descending = true;
+    else if (!order.eqz("ascending") && !order.eqz("asc"))
+      tok.loc.error("order must be \"ascending\" or \"descending\", not \"%.*s\"", SF(order));
+    return node;
+  }
+
+  if (name.eqz("template")) {
+    Str path = ego.required(tok, "path", "name");
+    if (block)
+      tok.loc.error("<sky-template> can't be inside a block");
+    else if (!ego.doc.templ.is_null())
+      tok.loc.error("a page can only use one template");
+    else {
+      ego.doc.templ = path;
+      ego.doc.templ_loc = tok.loc;
+    }
+    return NULL;
+  }
+
+  if (name.eqz("block")) {
+    Node *node = ego.new_node(ND_BLOCK, tok);
+    node.name = ego.required(tok, "name", NULL);
+    if (block)
+      tok.loc.error("blocks can't be nested");
+    if (!tok.self_closing)
+      node.body = ego.nodes(tok);
+    return node;
+  }
+
+  tok.loc.error("unknown tag <sky-%.*s>", SF(name));
+  for (Attr *a = tok.attrs; a; a = a.next)
+    a.used = true;
+  return NULL;
+}
+
+Doc *parse(Source *src) {
+  Doc *doc = alloc(sizeof(Doc));
+  doc.src = src;
+
+  Parser p = {};
+  p.doc = doc;
+  p.tok = lex(src);
+  Node *nodes = p.nodes(NULL);
+
+  if (doc.templ.is_null()) {
+    for (Node *n = nodes; n; n = n.next)
+      if (n.kind == ND_BLOCK)
+        n.loc.error("<sky-block> only works in a page that uses <sky-template>");
+    doc.body = nodes;
+    return doc;
+  }
+
+  // In a templated page, only the blocks matter.
+  Node head = {};
+  Node *cur = &head;
+  Map names = {};
+  bool warned = false;
+  for (Node *n = nodes; n; n = n.next) {
+    if (n.kind == ND_BLOCK) {
+      if (names.get(n.name))
+        n.loc.error("duplicate block '%.*s'", SF(n.name));
+      names.put(n.name, n);
+      cur = cur.next = n;
+      continue;
+    }
+    if (!warned && !(n.kind == ND_TEXT && n.text.is_blank())) {
+      n.loc.warn("this page uses a template, so content outside <sky-block> is ignored");
+      warned = true;
+    }
+  }
+  cur.next = NULL;
+  doc.body = head.next;
+  return doc;
+}

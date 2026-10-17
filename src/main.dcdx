@@ -1,0 +1,81 @@
+#include "skyblue.h"
+
+Config config;
+
+static void usage(int status) {
+  fprintf(status ? stderr : stdout,
+          "usage: skyblue [-v] [-o <output dir>] -i <input dir>\n"
+          "       skyblue [-v] -s [-h <host:port>] -i <input dir>\n"
+          "\n"
+          "  -i <dir>        the site's source (the input dir can also be the last argument)\n"
+          "  -o <dir>        where to write the site (default: build)\n"
+          "  -s              run the development server on 127.0.0.1:8080\n"
+          "  -h <host:port>  run the development server on this address\n"
+          "  -v              verbose\n");
+  exit(status);
+}
+
+static char *plural(int n) {
+  return n == 1 ? "" : "s";
+}
+
+int main(int argc, char **argv) {
+  config.output = "build";
+
+  int c;
+  while ((c = getopt(argc, argv, "i:o:h:sv")) != -1) {
+    switch (c) {
+    case 'i':
+      config.input = optarg;
+      break;
+    case 'o':
+      config.output = optarg;
+      break;
+    case 'h':
+      config.serve = optarg;
+      break;
+    case 's':
+      if (!config.serve)
+        config.serve = "";
+      break;
+    case 'v':
+      config.verbose = true;
+      break;
+    default:
+      usage(1);
+    }
+  }
+  if (!config.input && optind < argc)
+    config.input = argv[optind++];
+  if (!config.input || optind < argc)
+    usage(1);
+
+  if (!is_dir(str(config.input))) {
+    error("'%s' is not a directory", config.input);
+    return 1;
+  }
+
+  if (config.serve) {
+    // The arena is reset on every rebuild, so these must outlive it.
+    char *input = strdup(path_clean(str(config.input)).cstr());
+    char *output = strdup(path_clean(str(config.output)).cstr());
+    serve(input, output, config.serve);
+    return 0;
+  }
+
+  Site *site = build_site(config.input, config.output);
+  if (nerrors) {
+    fprintf(stderr, "skyblue: %d error%s, %d warning%s; nothing was written\n",
+            nerrors, plural(nerrors), nwarnings, plural(nwarnings));
+    return 1;
+  }
+  if (!site.write(str(config.output)))
+    return 1;
+
+  fprintf(stderr, "skyblue: %d page%s and %d file%s -> %s",
+          site.npages, plural(site.npages), site.nfiles, plural(site.nfiles), config.output);
+  if (nwarnings)
+    fprintf(stderr, " (%d warning%s)", nwarnings, plural(nwarnings));
+  fprintf(stderr, "\n");
+  return 0;
+}

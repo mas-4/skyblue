@@ -1,0 +1,22 @@
+site/meta:1:1: warning: expected 'key=value'
+    1 | oops no equals
+      | ^
+site/index.html:1:1: warning: the <bluesky-...> tag prefix is deprecated; use <sky-...>
+    1 | <bluesky-template path="_imports/layout.html" />
+      | ^
+site/index.html:3:74: warning: unknown attribute 'colour' on <sky-include>
+    3 | <bluesky-block name="main">${meta.missing} <sky-include path="part.html" colour="red" /></bluesky-block>
+      |                                                                          ^
+site/index.html:1:49: warning: this page uses a template, so content outside <sky-block> is ignored
+    1 | <bluesky-template path="_imports/layout.html" />
+      |                                                 ^
+site/index.html:3:28: warning: the meta file has no key 'missing'
+    3 | <bluesky-block name="main">${meta.missing} <sky-include path="part.html" colour="red" /></bluesky-block>
+      |                            ^
+site/_imports/part.html:1:13: warning: <sky-slot> only has a value in a template
+    1 | <b>part</b> <sky-slot name="x" />
+      |             ^
+site/index.html:4:1: warning: template 'site/_imports/layout.html' has no <sky-slot name="sidebar">
+    4 | <bluesky-block name="sidebar">unused</bluesky-block>
+      | ^
+skyblue: 1 page and 0 files -> out (7 warnings)

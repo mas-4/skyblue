@@ -1,0 +1,352 @@
+#include "skyblue.h"
+
+#include <dirent.h>
+#include <netdb.h>
+#include <signal.h>
+#include <sys/socket.h>
+#include <sys/time.h>
+#include <sys/wait.h>
+
+// A development server. The site is built in memory and rebuilt
+// whenever a file in the input directory changes. Each connection is
+// handled in a forked child, so a slow or idle client (browsers open
+// speculative connections) can't block anyone else.
+
+typedef struct Server Server;
+struct Server {
+  char *input;
+  char *output;  // skipped while watching, if it's inside the input
+  int fd;
+  uint64_t stamp;
+  Site *site;
+  Str error_page; // set when the last build failed
+
+  bool open(char *addr);
+  void refresh(void);
+  void run(void);
+  void handle(int conn);
+  void reply(int conn, int status, char *type, Str body, bool head);
+};
+
+static uint64_t mix(uint64_t h, uint64_t v) {
+  return (h ^ v) * 0x100000001b3;
+}
+
+// A fingerprint of every path, size and mtime under `dir`. It doesn't
+// allocate, so checking it on every request doesn't grow the arena.
+static uint64_t fingerprint(char *dir, char *skip) {
+  DIR *d = opendir(dir);
+  if (!d)
+    return 0;
+
+  uint64_t sum = 0;
+  struct dirent *e;
+  while ((e = readdir(d))) {
+    if (!strcmp(e.d_name, ".") || !strcmp(e.d_name, ".."))
+      continue;
+    char path[4096];
+    if (!strcmp(dir, "."))
+      snprintf(path, sizeof(path), "%s", e.d_name);
+    else
+      snprintf(path, sizeof(path), "%s/%s", dir, e.d_name);
+    if (skip && !strcmp(path, skip))
+      continue;
+
+    struct stat st;
+    if (lstat(path, &st))
+      continue;
+    uint64_t h = 0xcbf29ce484222325;
+    for (char *p = path; *p; p++)
+      h = mix(h, (unsigned char)*p);
+    h = mix(h, st.st_mtim.tv_sec);
+    h = mix(h, st.st_mtim.tv_nsec);
+    h = mix(h, st.st_size);
+    sum += h;
+
+    if (S_ISDIR(st.st_mode))
+      sum += fingerprint(path, skip);
+  }
+  closedir(d);
+  return sum;
+}
+
+// Rebuild the site if anything changed since the last build.
+void Server.refresh(void) {
+  uint64_t stamp = fingerprint(ego.input, ego.output);
+  if (ego.site && stamp == ego.stamp)
+    return;
+  ego.stamp = stamp;
+
+  arena.reset();
+  reset_diags();
+  ego.error_page = (Str){};
+  ego.site = build_site(ego.input, ego.output);
+
+  if (nerrors) {
+    Buf page = {};
+    page.pushz("<!doctype html>\n<meta charset=\"utf-8\">\n"
+               "<title>skyblue: build failed</title>\n"
+               "<style>body{font:15px/1.4 ui-monospace,monospace;margin:2em}"
+               "pre{white-space:pre-wrap}</style>\n<h1>Build failed</h1>\n<pre>");
+    page.html(diag_log.str());
+    page.pushz("</pre>\n");
+    ego.error_page = page.str();
+    info("build failed with %d error%s; fix it and reload", nerrors, nerrors == 1 ? "" : "s");
+    return;
+  }
+  info("built %d page%s", ego.site.npages, ego.site.npages == 1 ? "" : "s");
+}
+
+// "host:port", "host", ":port", "[::1]:port" or "".
+bool Server.open(char *addr) {
+  char host[256] = "127.0.0.1";
+  char port[16] = "8080";
+
+  char *colon = strrchr(addr, ':');
+  if (addr[0] == '[') {
+    char *close = strchr(addr, ']');
+    if (!close) {
+      error("bad address '%s'", addr);
+      return false;
+    }
+    snprintf(host, sizeof(host), "%.*s", (int)(close - addr - 1), addr + 1);
+    if (close[1] == ':')
+      snprintf(port, sizeof(port), "%s", close + 2);
+  } else if (colon && colon == strchr(addr, ':')) {
+    if (colon > addr)
+      snprintf(host, sizeof(host), "%.*s", (int)(colon - addr), addr);
+    snprintf(port, sizeof(port), "%s", colon + 1);
+  } else if (addr[0]) {
+    snprintf(host, sizeof(host), "%s", addr);
+  }
+
+  struct addrinfo hints = {};
+  hints.ai_family = AF_UNSPEC;
+  hints.ai_socktype = SOCK_STREAM;
+  hints.ai_flags = AI_PASSIVE | AI_NUMERICSERV;
+  struct addrinfo *res;
+  int rc = getaddrinfo(host, port, &hints, &res);
+  if (rc) {
+    error("can't resolve %s:%s: %s", host, port, gai_strerror(rc));
+    return false;
+  }
+
+  ego.fd = -1;
+  for (struct addrinfo *ai = res; ai; ai = ai.ai_next) {
+    int fd = socket(ai.ai_family, ai.ai_socktype, ai.ai_protocol);
+    if (fd < 0)
+      continue;
+    int one = 1;
+    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+    if (bind(fd, ai.ai_addr, ai.ai_addrlen) == 0 && listen(fd, 64) == 0) {
+      ego.fd = fd;
+      break;
+    }
+    close(fd);
+  }
+  freeaddrinfo(res);
+
+  if (ego.fd < 0) {
+    error("can't listen on %s:%s: %s", host, port, strerror(errno));
+    return false;
+  }
+
+  bool v6 = strchr(host, ':') != NULL;
+  info("serving %s at http://%s%s%s:%s/", ego.input, v6 ? "[" : "", host, v6 ? "]" : "", port);
+  return true;
+}
+
+void Server.run(void) {
+  for (;;) {
+    int conn = accept(ego.fd, NULL, NULL);
+    if (conn < 0) {
+      if (errno != EINTR)
+        error("accept: %s", strerror(errno));
+      continue;
+    }
+
+    ego.refresh();
+
+    pid_t pid = fork();
+    if (pid == 0) {
+      close(ego.fd);
+      ego.handle(conn);
+      _exit(0);
+    }
+    if (pid < 0)
+      error("fork: %s", strerror(errno));
+    close(conn);
+  }
+}
+
+static char *mime_type(Str path) {
+  static char *types[][2] = {
+    {".html", "text/html; charset=utf-8"}, {".css", "text/css; charset=utf-8"},
+    {".js", "text/javascript; charset=utf-8"}, {".mjs", "text/javascript; charset=utf-8"},
+    {".json", "application/json"}, {".xml", "application/xml"},
+    {".txt", "text/plain; charset=utf-8"}, {".md", "text/markdown; charset=utf-8"},
+    {".svg", "image/svg+xml"}, {".png", "image/png"}, {".jpg", "image/jpeg"},
+    {".jpeg", "image/jpeg"}, {".gif", "image/gif"}, {".webp", "image/webp"},
+    {".avif", "image/avif"}, {".ico", "image/x-icon"}, {".pdf", "application/pdf"},
+    {".woff", "font/woff"}, {".woff2", "font/woff2"}, {".ttf", "font/ttf"},
+    {".otf", "font/otf"}, {".wasm", "application/wasm"}, {".mp3", "audio/mpeg"},
+    {".ogg", "audio/ogg"}, {".wav", "audio/wav"}, {".flac", "audio/flac"},
+    {".mp4", "video/mp4"}, {".webm", "video/webm"}, {".zip", "application/zip"},
+  };
+  for (int i = 0; i < sizeof(types) / sizeof(*types); i++)
+    if (path.ends_with(types[i][0]))
+      return types[i][1];
+  return "application/octet-stream";
+}
+
+static void write_all(int fd, Str s) {
+  while (s.len > 0) {
+    long n = write(fd, s.ptr, s.len);
+    if (n <= 0)
+      return;
+    s = s.from(n);
+  }
+}
+
+void Server.reply(int conn, int status, char *type, Str body, bool head) {
+  char *reason = status == 200 ? "OK" : status == 400 ? "Bad Request" :
+                 status == 404 ? "Not Found" : status == 405 ? "Method Not Allowed" :
+                 "Internal Server Error";
+  Buf b = {};
+  b.fmt("HTTP/1.1 %d %s\r\nContent-Type: %s\r\nContent-Length: %ld\r\n"
+        "Cache-Control: no-store\r\nConnection: close\r\n\r\n",
+        status, reason, type, body.len);
+  if (!head)
+    b.push(body);
+  write_all(conn, b.str());
+}
+
+static int unhex(char c) {
+  if ('0' <= c && c <= '9')
+    return c - '0';
+  if ('a' <= c && c <= 'f')
+    return c - 'a' + 10;
+  if ('A' <= c && c <= 'F')
+    return c - 'A' + 10;
+  return -1;
+}
+
+void Server.handle(int conn) {
+  struct timeval tv = {10, 0};
+  setsockopt(conn, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
+  char req[8192];
+  long len = 0;
+  while (len < sizeof(req) - 1) {
+    long n = read(conn, req + len, sizeof(req) - 1 - len);
+    if (n <= 0)
+      break;
+    len += n;
+    req[len] = '\0';
+    if (strstr(req, "\r\n\r\n") || strstr(req, "\n\n"))
+      break;
+  }
+  if (len == 0)
+    return;
+
+  Str line = (Str){req, len};
+  long eol = line.find_char('\n', 0);
+  line = line.slice(0, eol < 0 ? len : eol).trim();
+
+  long sp1 = line.find_char(' ', 0);
+  long sp2 = sp1 < 0 ? -1 : line.find_char(' ', sp1 + 1);
+  if (sp1 < 0 || sp2 < 0) {
+    ego.reply(conn, 400, "text/plain", S("bad request\n"), false);
+    return;
+  }
+  Str method = line.slice(0, sp1);
+  Str target = line.slice(sp1 + 1, sp2);
+  bool head = method.eqz("HEAD");
+
+  if (!method.eqz("GET") && !head) {
+    ego.reply(conn, 405, "text/plain", S("only GET and HEAD\n"), false);
+    info("%.*s %.*s 405", SF(method), SF(target));
+    return;
+  }
+
+  // Strip the query and fragment, and decode %XX.
+  long q = target.find_char('?', 0);
+  if (q >= 0)
+    target = target.slice(0, q);
+  q = target.find_char('#', 0);
+  if (q >= 0)
+    target = target.slice(0, q);
+
+  Buf path = {};
+  for (long i = 0; i < target.len; i++) {
+    char c = target.ptr[i];
+    if (c == '%' && i + 2 < target.len && unhex(target.ptr[i + 1]) >= 0 &&
+        unhex(target.ptr[i + 2]) >= 0) {
+      c = unhex(target.ptr[i + 1]) * 16 + unhex(target.ptr[i + 2]);
+      i += 2;
+    }
+    path.pushc(c);
+  }
+  Str p = path.str();
+  if (!p.starts_with("/") || p.find("/../", 0) >= 0 || p.ends_with("/..") ||
+      p.find_char('\0', 0) >= 0) {
+    ego.reply(conn, 400, "text/plain", S("bad path\n"), head);
+    info("%.*s %.*s 400", SF(method), SF(target));
+    return;
+  }
+
+  if (!ego.error_page.is_null()) {
+    ego.reply(conn, 500, "text/html; charset=utf-8", ego.error_page, head);
+    info("%.*s %.*s 500 (build failed)", SF(method), SF(target));
+    return;
+  }
+
+  // /            -> index.html
+  // /blog/       -> blog/index.html, blog.html
+  // /blog/post   -> blog/post, blog/post.html, blog/post/index.html
+  Str rel = p.from(1);
+  Str candidates[3];
+  int n = 0;
+  if (rel.len == 0 || rel.ends_with("/")) {
+    candidates[n++] = strf("%.*sindex.html", SF(rel));
+    if (rel.len > 0)
+      candidates[n++] = strf("%.*s.html", SF(rel.slice(0, rel.len - 1)));
+  } else {
+    candidates[n++] = rel;
+    candidates[n++] = strf("%.*s.html", SF(rel));
+    candidates[n++] = strf("%.*s/index.html", SF(rel));
+  }
+
+  for (int i = 0; i < n; i++) {
+    Output *o = ego.site.find(candidates[i]);
+    if (!o)
+      continue;
+
+    Str body = o.content;
+    if (!o.copy_from.is_null() && !read_file(o.copy_from, &body)) {
+      ego.reply(conn, 500, "text/plain", strf("can't read %.*s\n", SF(o.copy_from)), head);
+      info("%.*s %.*s 500", SF(method), SF(target));
+      return;
+    }
+    ego.reply(conn, 200, mime_type(o.path), body, head);
+    info("%.*s %.*s 200", SF(method), SF(target));
+    return;
+  }
+
+  ego.reply(conn, 404, "text/html; charset=utf-8",
+            S("<!doctype html>\n<title>Not found</title>\n<h1>404 Not Found</h1>\n"), head);
+  info("%.*s %.*s 404", SF(method), SF(target));
+}
+
+void serve(char *input, char *output, char *addr) {
+  signal(SIGPIPE, SIG_IGN);
+  signal(SIGCHLD, SIG_IGN); // reap children automatically
+
+  Server s = {};
+  s.input = input;
+  s.output = output;
+  if (!s.open(addr))
+    exit(1);
+  s.refresh();
+  s.run();
+}
